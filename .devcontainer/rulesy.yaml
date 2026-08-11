@@ -1,3 +1,25 @@
+preconditions:
+  - name: Codex CLI directory is on PATH
+    check: |
+      case ":$PATH:" in
+        *":$HOME/.local/opt/codex-cli/bin:"*) ;;
+        *) exit 1 ;;
+      esac
+
+  - name: User local bin directory is on PATH
+    check: |
+      case ":$PATH:" in
+        *":$HOME/.local/bin:"*) ;;
+        *) exit 1 ;;
+      esac
+
+  - name: Cargo bin directory is on PATH
+    check: |
+      case ":$PATH:" in
+        *":$HOME/.cargo/bin:"*) ;;
+        *) exit 1 ;;
+      esac
+
 rules:
   - remote: "./rulesy/rulesy.yaml"
   - remote: "./rulesy/moon.yaml"
