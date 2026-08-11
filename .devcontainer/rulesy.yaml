@@ -3,4 +3,4 @@ rules:
   - remote: "./rulesy/moon.yaml"
   - remote: "./rulesy/codex.yaml"
   - remote: "./rulesy/git.yaml"
-  # - remote: "./rulesy/rust.yaml"
+  - remote: "./rulesy/rust.yaml"

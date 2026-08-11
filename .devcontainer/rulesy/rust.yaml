@@ -1,5 +1,26 @@
 rules:
   - name: Rust is pinned with development components
-    check: exec bash ../scripts/rustup/check.sh
-    fix: exec bash ../scripts/rustup/install.sh
+    check: |
+      root="$(cd ../.. && pwd)"
+      channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' "$root/rust-toolchain.toml")"
+      rustup="$HOME/.cargo/bin/rustup"
+
+      test -x "$rustup" &&
+      "$rustup" toolchain list | grep -Fq "$channel" &&
+      "$rustup" component list --toolchain "$channel" --installed | grep -Eq '^clippy(-|$)' &&
+      "$rustup" component list --toolchain "$channel" --installed | grep -Eq '^rustfmt(-|$)'
+
+    fix: |
+      root="$(cd ../.. && pwd)"
+      channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' "$root/rust-toolchain.toml")"
+      rustup="$HOME/.cargo/bin/rustup"
+
+      if [ ! -x "$rustup" ]; then
+        curl -sSf https://sh.rustup.rs |
+          sh -s -- -y --profile minimal --default-toolchain none
+      fi
+
+      "$rustup" toolchain install "$channel" --profile minimal
+      "$rustup" component add --toolchain "$channel" clippy rustfmt
+
     timeout: 15m
