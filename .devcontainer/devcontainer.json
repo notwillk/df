@@ -20,6 +20,7 @@
       ]
     }
   },
+  "postCreateCommand": "/usr/local/bin/rulesy --config=.devcontainer/rulesy.yaml check --non-interactive --fix",
   "postStartCommand": "/usr/local/bin/rulesy --config=.devcontainer/rulesy.yaml check --non-interactive",
   "remoteUser": "vscode"
 }
