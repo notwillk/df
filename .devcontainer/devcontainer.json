@@ -8,7 +8,7 @@
     "DEVCONTAINER": "true"
   },
   "remoteEnv": {
-    "PATH": "${containerEnv:HOME}/.local/opt/codex-cli/bin:${containerEnv:HOME}/.local/bin:${containerEnv:HOME}/.cargo/bin:${containerEnv:PATH}"
+    "PATH": "/home/vscode/.local/opt/codex-cli/bin:/home/vscode/.local/bin:/home/vscode/.cargo/bin:${containerEnv:PATH}"
   },
   "customizations": {
     "vscode": {
@@ -20,5 +20,7 @@
       ]
     }
   },
+  "postCreateCommand": "/usr/local/bin/rulesy --config=.devcontainer/rulesy.yaml check --fix --non-interactive",
+  "postStartCommand": "/usr/local/bin/rulesy --config=.devcontainer/rulesy.yaml check --non-interactive",
   "remoteUser": "vscode"
 }
