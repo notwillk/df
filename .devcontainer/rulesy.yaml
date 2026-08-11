@@ -36,8 +36,8 @@ preconditions:
       esac
 
 rules:
-  - remote: "./rulesy/rulesy.yaml"
-  - remote: "./rulesy/moon.yaml"
+  # - remote: "./rulesy/rulesy.yaml"
+  # - remote: "./rulesy/moon.yaml"
   - remote: "./rulesy/codex.yaml"
-  - remote: "./rulesy/git.yaml"
-  - remote: "./rulesy/rust.yaml"
+  # - remote: "./rulesy/git.yaml"
+  # - remote: "./rulesy/rust.yaml"
