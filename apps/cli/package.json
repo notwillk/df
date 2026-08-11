@@ -1,12 +1,12 @@
 {
-  "name": "kaylee-cli",
+  "name": "df-cli",
   "private": true,
   "version": "0.1.0",
-  "description": "CLI application workspace for Kaylee.",
+  "description": "CLI application workspace for df.",
   "bin": {
-    "kaylee": "./bin/kaylee.js"
+    "df": "./bin/df.js"
   },
   "scripts": {
-    "start": "node ./bin/kaylee.js"
+    "start": "node ./bin/df.js"
   }
 }

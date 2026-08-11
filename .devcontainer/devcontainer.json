@@ -1,5 +1,5 @@
 {
-  "name": "Kaylee",
+  "name": "df-devcontainer",
   "image": "mcr.microsoft.com/devcontainers/base:ubuntu26.04",
   "features": {
     "ghcr.io/notwillk/rulesy/rulesy": {}

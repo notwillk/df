@@ -1,7 +1,65 @@
 rules:
   - name: GitHub CLI is installed
-    check: exec bash ../scripts/github-cli/check.sh
-    fix: exec bash ../scripts/github-cli/install.sh
+    check: |
+      test -x "$HOME/.local/bin/gh" &&
+      "$HOME/.local/bin/gh" --version >/dev/null 2>&1
+    fix: |
+      set -euo pipefail
+
+      case "$(uname -s)" in
+        Linux)
+          os="linux"
+          ext="tar.gz"
+          ;;
+        Darwin)
+          os="macOS"
+          ext="zip"
+          ;;
+        *)
+          echo "Unsupported OS: $(uname -s)" >&2
+          exit 1
+          ;;
+      esac
+
+      case "$(uname -m)" in
+        x86_64)
+          arch="amd64"
+          ;;
+        aarch64|arm64)
+          arch="arm64"
+          ;;
+        *)
+          echo "Unsupported architecture: $(uname -m)" >&2
+          exit 1
+          ;;
+      esac
+
+      version="$(
+        curl -fsSLI -o /dev/null -w '%{url_effective}' \
+          https://github.com/cli/cli/releases/latest |
+        sed 's#.*/tag/v##'
+      )"
+
+      tmp="$(mktemp -d)"
+      trap 'rm -rf "$tmp"' EXIT
+
+      archive="gh_${version}_${os}_${arch}.${ext}"
+      url="https://github.com/cli/cli/releases/download/v${version}/${archive}"
+
+      mkdir -p "$HOME/.local/bin"
+
+      case "$ext" in
+        tar.gz)
+          curl -fsSL "$url" | tar -xz -C "$tmp"
+          cp "$tmp/gh_${version}_${os}_${arch}/bin/gh" "$HOME/.local/bin/gh"
+          ;;
+        zip)
+          curl -fsSL "$url" -o "$tmp/gh.zip"
+          unzip -q "$tmp/gh.zip" -d "$tmp"
+          cp "$tmp/gh_${version}_${os}_${arch}/bin/gh" "$HOME/.local/bin/gh"
+          ;;
+      esac
+
     timeout: 10m
 
   - name: GitHub CLI is authenticated

@@ -1,7 +1,7 @@
 rules:
-  - remote: ./node.yaml
-
-  - name: Moon is pinned to the workspace version
-    check: exec bash ../scripts/moon/check.sh
-    fix: exec bash ../scripts/moon/install.sh
+  - name: Moon is installed
+    check: |
+      test -x "$HOME/.moon/bin/moon" &&
+      "$HOME/.moon/bin/moon" --version >/dev/null 2>&1
+    fix: bash <(curl -fsSL https://moonrepo.dev/install/moon.sh)
     timeout: 10m
