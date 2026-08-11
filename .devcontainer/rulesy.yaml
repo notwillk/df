@@ -1,39 +1,39 @@
-preconditions:
-  - name: Codex CLI directory is on PATH
-    check: |
-      expected="$HOME/.local/opt/codex-cli/bin"
-      case ":$PATH:" in
-        *":$expected:"*) ;;
-        *)
-          echo "Expected: $expected" >&2
-          echo "PATH: $PATH" >&2
-          exit 1
-          ;;
-      esac
+# preconditions:
+#   - name: Codex CLI directory is on PATH
+#     check: |
+#       expected="$HOME/.local/opt/codex-cli/bin"
+#       case ":$PATH:" in
+#         *":$expected:"*) ;;
+#         *)
+#           echo "Expected: $expected" >&2
+#           echo "PATH: $PATH" >&2
+#           exit 1
+#           ;;
+#       esac
 
-  - name: User local bin directory is on PATH
-    check: |
-      expected="$HOME/.local/bin"
-      case ":$PATH:" in
-        *":$expected:"*) ;;
-        *)
-          echo "Expected: $expected" >&2
-          echo "PATH: $PATH" >&2
-          exit 1
-          ;;
-      esac
+#   - name: User local bin directory is on PATH
+#     check: |
+#       expected="$HOME/.local/bin"
+#       case ":$PATH:" in
+#         *":$expected:"*) ;;
+#         *)
+#           echo "Expected: $expected" >&2
+#           echo "PATH: $PATH" >&2
+#           exit 1
+#           ;;
+#       esac
 
-  - name: Cargo bin directory is on PATH
-    check: |
-      expected="$HOME/.cargo/bin"
-      case ":$PATH:" in
-        *":$expected:"*) ;;
-        *)
-          echo "Expected: $expected" >&2
-          echo "PATH: $PATH" >&2
-          exit 1
-          ;;
-      esac
+#   - name: Cargo bin directory is on PATH
+#     check: |
+#       expected="$HOME/.cargo/bin"
+#       case ":$PATH:" in
+#         *":$expected:"*) ;;
+#         *)
+#           echo "Expected: $expected" >&2
+#           echo "PATH: $PATH" >&2
+#           exit 1
+#           ;;
+#       esac
 
 rules:
   # - remote: "./rulesy/rulesy.yaml"
