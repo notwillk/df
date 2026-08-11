@@ -1,47 +1,6 @@
 rules:
-  - name: Moon is pinned to the workspace version
-    check: exec bash ./scripts/moon/check.sh
-    fix: exec bash ./scripts/moon/install.sh
-    timeout: 10m
-
-  - name: Rust is pinned with development components
-    check: exec bash ./scripts/rustup/check.sh
-    fix: exec bash ./scripts/rustup/install.sh
-    timeout: 15m
-
-  - name: GitHub CLI is installed
-    check: exec bash ./scripts/github-cli/check.sh
-    fix: exec bash ./scripts/github-cli/install.sh
-    timeout: 10m
-
-  - name: GitHub CLI is authenticated
-    severity: warn
-    check: gh auth status --active --hostname github.com
-    hint: Run `gh auth login --hostname github.com` to authenticate.
-
-  - name: Sync Git commit name from gh
-    skip-if: '! gh auth status --active --hostname github.com >/dev/null 2>&1'
-    check: |
-      test "$(git config --global --get user.name)" = "$(gh api user --jq 'if (.name // "") == "" then .login else .name end')"
-    fix: |
-      git config --global user.name "$(gh api user --jq 'if (.name // "") == "" then .login else .name end')"
-
-  - name: Sync Git commit email from gh
-    skip-if: '! gh auth status --active --hostname github.com >/dev/null 2>&1'
-    check: |
-      test "$(git config --global --get user.email)" = "$(gh api user --jq '(.id | tostring) + "+" + .login + "@users.noreply.github.com"')"
-    fix: |
-      git config --global user.email "$(gh api user --jq '(.id | tostring) + "+" + .login + "@users.noreply.github.com"')"
-
-  - name: Connect Git authentication to gh
-    skip-if: '! gh auth status --active --hostname github.com >/dev/null 2>&1'
-    check: |
-      git config --global --get-all credential.https://github.com.helper | grep -Fq "gh auth git-credential"
-    fix: |
-      gh auth setup-git --hostname github.com
-
-  - name: Codex CLI is pinned for local development
-    skip-if: '[ "${GITHUB_ACTIONS:-}" = "true" ]'
-    check: exec bash ./scripts/codex-cli/check.sh
-    fix: exec bash ./scripts/codex-cli/install.sh
-    timeout: 15m
+  - remote: "./rulesy/rulesy.yaml"
+  - remote: "./rulesy/moon.yaml"
+  - remote: "./rulesy/codex.yaml"
+  - remote: "./rulesy/git.yaml"
+  - remote: "./rulesy/rust.yaml"

@@ -1,0 +1,43 @@
+rules:
+  - name: Node.js is installed and available on PATH
+    check: |
+      command -v node >/dev/null 2>&1 &&
+      command -v npm >/dev/null 2>&1
+    fix: |
+      exec bash -c '
+        set -euo pipefail
+
+        case "$(uname -s)" in
+          Linux)
+            os="linux"
+            ;;
+          Darwin)
+            os="darwin"
+            ;;
+          *)
+            echo "Unsupported OS: $(uname -s)" >&2
+            exit 1
+            ;;
+        esac
+
+        case "$(uname -m)" in
+          x86_64)
+            arch="x64"
+            ;;
+          aarch64|arm64)
+            arch="arm64"
+            ;;
+          *)
+            echo "Unsupported architecture: $(uname -m)" >&2
+            exit 1
+            ;;
+        esac
+
+        mkdir -p "${HOME}/.local"
+
+        curl -fsSL "https://nodejs.org/dist/latest/node-latest-${os}-${arch}.tar.xz" |
+          tar -xJ \
+            --strip-components=1 \
+            -C "${HOME}/.local"
+      '
+    timeout: 5m

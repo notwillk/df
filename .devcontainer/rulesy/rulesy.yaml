@@ -1,0 +1,7 @@
+rules:
+  - name: Rulesy schema files are installed
+    check: |
+      [ -f "../../.schemas/rulesy.schema.json" ]
+    fix: |
+      mkdir -p ../../.schemas
+      rulesy schema > ../../.schemas/rulesy.schema.json

@@ -1,0 +1,7 @@
+rules:
+  - remote: ./node.yaml
+
+  - name: Moon is pinned to the workspace version
+    check: exec bash ../scripts/moon/check.sh
+    fix: exec bash ../scripts/moon/install.sh
+    timeout: 10m

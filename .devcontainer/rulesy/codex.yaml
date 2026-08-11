@@ -1,0 +1,7 @@
+rules:
+  - remote: ./node.yaml
+  - name: Codex CLI is pinned for local development
+    skip-if: '[ "${GITHUB_ACTIONS:-}" = "true" ]'
+    check: exec bash ../scripts/codex-cli/check.sh
+    fix: exec bash ../scripts/codex-cli/install.sh
+    timeout: 15m

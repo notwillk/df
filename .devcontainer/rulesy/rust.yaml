@@ -1,0 +1,5 @@
+rules:
+  - name: Rust is pinned with development components
+    check: exec bash ../scripts/rustup/check.sh
+    fix: exec bash ../scripts/rustup/install.sh
+    timeout: 15m
