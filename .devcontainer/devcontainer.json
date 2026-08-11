@@ -1,0 +1,26 @@
+{
+  "name": "Kaylee",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu26.04",
+  "features": {
+    "ghcr.io/notwillk/rulesy/rulesy": {}
+  },
+  "containerEnv": {
+    "DEVCONTAINER": "true"
+  },
+  "remoteEnv": {
+    "PATH": "/home/vscode/.local/opt/codex-cli/bin:/home/vscode/.local/bin:/home/vscode/.cargo/bin:${containerEnv:PATH}"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "github.vscode-github-actions",
+        "golang.go",
+        "moonrepo.moon-console",
+        "sst-dev.opencode"
+      ]
+    }
+  },
+  "postCreateCommand": "/usr/local/bin/rulesy --config=.devcontainer/rulesy.yaml check --fix --non-interactive",
+  "postStartCommand": "/usr/local/bin/rulesy --config=.devcontainer/rulesy.yaml check --fix --non-interactive",
+  "remoteUser": "vscode"
+}

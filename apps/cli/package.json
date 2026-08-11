@@ -1,0 +1,12 @@
+{
+  "name": "kaylee-cli",
+  "private": true,
+  "version": "0.1.0",
+  "description": "CLI application workspace for Kaylee.",
+  "bin": {
+    "kaylee": "./bin/kaylee.js"
+  },
+  "scripts": {
+    "start": "node ./bin/kaylee.js"
+  }
+}
