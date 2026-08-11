@@ -1,23 +1,38 @@
 preconditions:
   - name: Codex CLI directory is on PATH
     check: |
+      expected="$HOME/.local/opt/codex-cli/bin"
       case ":$PATH:" in
-        *":$HOME/.local/opt/codex-cli/bin:"*) ;;
-        *) exit 1 ;;
+        *":$expected:"*) ;;
+        *)
+          echo "Expected: $expected" >&2
+          echo "PATH: $PATH" >&2
+          exit 1
+          ;;
       esac
 
   - name: User local bin directory is on PATH
     check: |
+      expected="$HOME/.local/bin"
       case ":$PATH:" in
-        *":$HOME/.local/bin:"*) ;;
-        *) exit 1 ;;
+        *":$expected:"*) ;;
+        *)
+          echo "Expected: $expected" >&2
+          echo "PATH: $PATH" >&2
+          exit 1
+          ;;
       esac
 
   - name: Cargo bin directory is on PATH
     check: |
+      expected="$HOME/.cargo/bin"
       case ":$PATH:" in
-        *":$HOME/.cargo/bin:"*) ;;
-        *) exit 1 ;;
+        *":$expected:"*) ;;
+        *)
+          echo "Expected: $expected" >&2
+          echo "PATH: $PATH" >&2
+          exit 1
+          ;;
       esac
 
 rules:
