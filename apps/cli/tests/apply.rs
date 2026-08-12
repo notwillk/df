@@ -247,9 +247,10 @@ features:
 #[test]
 fn feature_script_runs_with_a_relative_home() {
     let fixture = Fixture::new();
+    let marker = fixture.home.join("script-ran");
     fixture.write_apply_script(
         "default",
-        "#!/bin/sh\nprintf 'ran\n' > \"$OLDPWD/script-ran\"\n",
+        "#!/bin/sh\nprintf 'ran\n' > \"$DOF_APPLY_TEST_MARKER\"\n",
     );
     let current_directory = fixture.root.path();
     let relative_home = fixture.home.strip_prefix(current_directory).unwrap();
@@ -258,15 +259,12 @@ fn feature_script_runs_with_a_relative_home() {
         Command::new(binary())
             .current_dir(current_directory)
             .env("HOME", relative_home)
-            .env("OLDPWD", &fixture.home)
+            .env("DOF_APPLY_TEST_MARKER", &marker)
             .arg("apply"),
     );
 
     assert!(result.status.success(), "{}", stderr(&result));
-    assert_eq!(
-        fs::read_to_string(fixture.home.join("script-ran")).unwrap(),
-        "ran\n"
-    );
+    assert_eq!(fs::read_to_string(marker).unwrap(), "ran\n");
 }
 
 #[test]
