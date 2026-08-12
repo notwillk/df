@@ -1,0 +1,11 @@
+rules:
+  - name: Agent skill host is configured
+    severity: warn
+    check: test -n "${AGENT_SKILL_HOST:-}"
+    hint: |
+      Set AGENT_SKILL_HOST to the `gh skill --agent` identifier for your coding agent.
+      Common values include `codex`, `claude-code`, `opencode`, `cursor`,
+      `github-copilot`, and `gemini-cli`; run `gh skill install --help` for the
+      full current list. To persist the choice, add a line such as
+      `export AGENT_SKILL_HOST=codex` (using your agent's value) to `~/.bashrc`,
+      `~/.zshrc`, or your shell's equivalent startup file, then restart the shell.

@@ -5,3 +5,10 @@ rules:
       "$HOME/.moon/bin/moon" --version >/dev/null 2>&1
     fix: bash <(curl -fsSL https://moonrepo.dev/install/moon.sh)
     timeout: 10m
+
+  - name: Moon agent skill is installed for the configured agent
+    skip-if: '[ -z "${AGENT_SKILL_HOST:-}" ]'
+    check: |
+      test "$(gh skill list --agent "$AGENT_SKILL_HOST" --scope user --json skillName --jq 'any(.[]; .skillName == "moon")')" = true
+    fix: gh skill install notwillk/rulesy .agents/skills/moon --allow-hidden-dirs --agent "$AGENT_SKILL_HOST" --scope user
+    timeout: 10m

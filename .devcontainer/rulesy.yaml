@@ -1,6 +1,7 @@
 rules:
+  - remote: "./rulesy/git.yaml"
+  - remote: "./rulesy/skills.yaml"
   - remote: "./rulesy/rulesy.yaml"
   - remote: "./rulesy/moon.yaml"
   - remote: "./rulesy/codex.yaml"
-  - remote: "./rulesy/git.yaml"
   - remote: "./rulesy/rust.yaml"
