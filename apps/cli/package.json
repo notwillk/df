@@ -1,12 +1,12 @@
 {
-  "name": "df-cli",
+  "name": "dof-cli",
   "private": true,
   "version": "0.1.0",
-  "description": "CLI application workspace for df.",
+  "description": "CLI application workspace for dof.",
   "bin": {
-    "df": "./bin/df.js"
+    "dof": "./bin/dof.js"
   },
   "scripts": {
-    "start": "node ./bin/df.js"
+    "start": "node ./bin/dof.js"
   }
 }

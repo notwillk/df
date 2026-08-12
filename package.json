@@ -1,8 +1,8 @@
 {
-  "name": "df",
+  "name": "dof",
   "private": true,
   "version": "0.1.0",
-  "description": "df monorepo workspace.",
+  "description": "dof monorepo workspace.",
   "packageManager": "npm@10.9.8",
   "workspaces": [
     "apps/*"
