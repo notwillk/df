@@ -1,0 +1,4 @@
+interface:
+  display_name: "dof"
+  short_description: "Manage dotfiles safely with dof"
+  default_prompt: "Use $dof to inspect, validate, and safely update my dotfiles workspace."

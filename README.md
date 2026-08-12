@@ -34,6 +34,21 @@ is not operational until the repository maintainer completes the setup in
 [`keys/README.md`](keys/README.md); until then, the strict installer and
 release workflow intentionally fail rather than accepting unsigned binaries.
 
+## Agent skill
+
+Install the repository's agent-neutral `dof` skill at user scope. Set
+`AGENT_SKILL_HOST` to the host identifier accepted by `gh skill` for your
+agentic coding tool:
+
+```sh
+gh skill install notwillk/df dof \
+  --agent "$AGENT_SKILL_HOST" \
+  --scope user
+```
+
+Use `gh skill install --help` to see the host identifiers supported by the
+installed GitHub CLI.
+
 ## Development
 
 The CLI is a Rust workspace application under `apps/cli`.
