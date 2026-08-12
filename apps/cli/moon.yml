@@ -1,0 +1,115 @@
+$schema: "https://moonrepo.dev/schemas/project.json"
+
+language: rust
+layer: tool
+
+tasks:
+  build:
+    command: cargo build --workspace --locked --release
+    inputs:
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/rust-toolchain.toml"
+      - "Cargo.toml"
+      - "src/**/*"
+    options:
+      cache: false
+      os: [linux, macos]
+
+  test:
+    command: cargo test --workspace --locked
+    inputs:
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/rust-toolchain.toml"
+      - "Cargo.toml"
+      - "src/**/*"
+      - "tests/**/*"
+    options:
+      cache: false
+      os: [linux, macos]
+
+  format-check:
+    command: cargo fmt --all --check
+    inputs:
+      - "/Cargo.toml"
+      - "Cargo.toml"
+      - "src/**/*"
+      - "tests/**/*"
+    options:
+      cache: false
+      os: [linux, macos]
+
+  clippy:
+    command: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+    inputs:
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/rust-toolchain.toml"
+      - "Cargo.toml"
+      - "src/**/*"
+      - "tests/**/*"
+    options:
+      cache: false
+      os: [linux, macos]
+
+  get-version:
+    command: ./scripts/get-version.sh
+    inputs:
+      - "/Cargo.toml"
+      - "scripts/get-version.sh"
+    options:
+      cache: false
+      os: [linux, macos]
+
+  tag-check:
+    command: ./scripts/ensure-tag-matches-version.sh
+    inputs:
+      - "/Cargo.toml"
+      - "scripts/get-version.sh"
+      - "scripts/ensure-tag-matches-version.sh"
+    options:
+      cache: false
+      os: [linux, macos]
+
+  cross-compile:
+    command: ./scripts/cross-compile.sh
+    inputs:
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/rust-toolchain.toml"
+      - "Cargo.toml"
+      - "Cross.toml"
+      - "scripts/cross-compile.sh"
+      - "src/**/*"
+    outputs:
+      - "dist/*.tar.gz"
+      - "dist/*-checksum.txt"
+    options:
+      cache: false
+      os: [linux, macos]
+
+  release:
+    command: ./scripts/release.sh
+    inputs:
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "scripts/release.sh"
+    options:
+      cache: false
+      runInCI: false
+      os: [linux, macos]
+
+  release-contract-test:
+    command: ./scripts/tests/all.sh
+    inputs:
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/scripts/install.sh"
+      - "/scripts/tests/**/*"
+      - "Cargo.toml"
+      - "Cross.toml"
+      - "scripts/**/*"
+    options:
+      cache: false
+      os: [linux, macos]

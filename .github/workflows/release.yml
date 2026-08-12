@@ -1,0 +1,264 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  quality:
+    name: Test (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            full_checks: true
+          - runner: macos-latest
+            full_checks: false
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Ensure tag matches workspace version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: ./apps/cli/scripts/ensure-tag-matches-version.sh "$RELEASE_TAG"
+
+      - name: Run Rust tests
+        run: cargo test --workspace --locked
+
+      - name: Check formatting
+        if: matrix.full_checks
+        run: cargo fmt --all --check
+
+      - name: Run strict Clippy checks
+        if: matrix.full_checks
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: Check shell syntax
+        if: matrix.full_checks
+        run: |
+          find apps/cli/scripts -type f -name '*.sh' -exec bash -n {} +
+          find scripts -type f -name '*.sh' -exec sh -n {} +
+
+      - name: Run release contract tests
+        if: matrix.full_checks
+        run: ./apps/cli/scripts/tests/all.sh
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: quality
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+            archive: dof_linux_x86_64.tar.gz
+            checksum: dof_linux_x86_64-checksum.txt
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04
+            archive: dof_linux_aarch64.tar.gz
+            checksum: dof_linux_aarch64-checksum.txt
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            archive: dof_darwin_aarch64.tar.gz
+            checksum: dof_darwin_aarch64-checksum.txt
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Ensure tag matches workspace version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: ./apps/cli/scripts/ensure-tag-matches-version.sh "$RELEASE_TAG"
+
+      - name: Build and package
+        run: ./apps/cli/scripts/cross-compile.sh "${{ matrix.target }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dof-${{ matrix.target }}-artifact
+          if-no-files-found: error
+          path: |
+            apps/cli/dist/${{ matrix.archive }}
+            apps/cli/dist/${{ matrix.checksum }}
+
+  verify-linux:
+    name: Verify Linux release (${{ matrix.arch }})
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            arch: x86_64
+            runner: ubuntu-24.04
+            archive: dof_linux_x86_64.tar.gz
+          - target: aarch64-unknown-linux-musl
+            arch: aarch64
+            runner: ubuntu-24.04-arm
+            archive: dof_linux_aarch64.tar.gz
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Download Linux artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dof-${{ matrix.target }}-artifact
+          path: apps/cli/dist
+
+      - name: Verify archive and static binary
+        env:
+          ARCHIVE: ${{ matrix.archive }}
+        run: |
+          set -euo pipefail
+          verify_dir="$RUNNER_TEMP/dof-verify"
+          mkdir -p "$verify_dir"
+          checksum_fragment="${ARCHIVE%.tar.gz}-checksum.txt"
+          (cd apps/cli/dist && sha256sum --check --strict "$checksum_fragment")
+          test "$(tar -tzf "apps/cli/dist/$ARCHIVE")" = "dof"
+          tar -xzf "apps/cli/dist/$ARCHIVE" -C "$verify_dir"
+          test -f "$verify_dir/dof"
+          test ! -L "$verify_dir/dof"
+          expected_version="$(./apps/cli/scripts/get-version.sh)"
+          ./apps/cli/scripts/verify-static-linux-binary.sh "$verify_dir/dof" "$expected_version"
+
+  verify-macos:
+    name: Verify macOS Apple Silicon release
+    needs: build
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dof-aarch64-apple-darwin-artifact
+          path: apps/cli/dist
+
+      - name: Verify archive and Apple Silicon binary
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "arm64"
+          verify_dir="$RUNNER_TEMP/dof-verify"
+          mkdir -p "$verify_dir"
+          (
+            cd apps/cli/dist
+            shasum -a 256 -c dof_darwin_aarch64-checksum.txt
+          )
+          test "$(tar -tzf apps/cli/dist/dof_darwin_aarch64.tar.gz)" = "dof"
+          tar -xzf apps/cli/dist/dof_darwin_aarch64.tar.gz -C "$verify_dir"
+          test -f "$verify_dir/dof"
+          test ! -L "$verify_dir/dof"
+          expected_version="$(./apps/cli/scripts/get-version.sh)"
+          ./apps/cli/scripts/verify-macos-binary.sh "$verify_dir/dof" "$expected_version"
+
+  release:
+    name: Publish GitHub release
+    needs:
+      - build
+      - verify-linux
+      - verify-macos
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Download artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: apps/cli/dist/artifacts
+          merge-multiple: true
+
+      - name: Prepare checksum manifest
+        run: |
+          set -euo pipefail
+          cd apps/cli/dist/artifacts
+          shopt -s nullglob
+          fragments=(dof_*-checksum.txt)
+          test "${#fragments[@]}" -eq 3
+          LC_ALL=C sort "${fragments[@]}" >checksums.txt
+          test "$(wc -l <checksums.txt)" -eq 3
+          for archive in \
+            dof_linux_x86_64.tar.gz \
+            dof_linux_aarch64.tar.gz \
+            dof_darwin_aarch64.tar.gz
+          do
+            test "$(grep -Ec "^[0-9a-f]{64}  ${archive}$" checksums.txt)" -eq 1
+            test -f "$archive"
+          done
+          sha256sum --check --strict checksums.txt
+
+      - name: Sign checksum manifest
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -s keys/signing-key.asc
+          test -n "$GPG_PRIVATE_KEY"
+          export GNUPGHOME
+          GNUPGHOME="$(mktemp -d "$RUNNER_TEMP/dof-gpg.XXXXXX")"
+          chmod 0700 "$GNUPGHOME"
+          trap 'rm -rf -- "$GNUPGHOME"' EXIT
+          public_fingerprint="$(
+            gpg --batch --with-colons --show-keys keys/signing-key.asc |
+              awk -F: '$1 == "fpr" { print $10; exit }'
+          )"
+          test -n "$public_fingerprint"
+          gpg --batch --import keys/signing-key.asc
+          printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --import
+          unset GPG_PRIVATE_KEY
+          secret_fingerprint="$(
+            gpg --batch --with-colons --list-secret-keys |
+              awk -F: '$1 == "fpr" { print $10; exit }'
+          )"
+          test "$secret_fingerprint" = "$public_fingerprint"
+          gpg \
+            --batch \
+            --yes \
+            --pinentry-mode loopback \
+            --passphrase '' \
+            --local-user "$public_fingerprint" \
+            --output apps/cli/dist/artifacts/checksums.txt.sig \
+            --detach-sign apps/cli/dist/artifacts/checksums.txt
+          test -s apps/cli/dist/artifacts/checksums.txt.sig
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          draft: false
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          files: |
+            apps/cli/dist/artifacts/dof_linux_x86_64.tar.gz
+            apps/cli/dist/artifacts/dof_linux_aarch64.tar.gz
+            apps/cli/dist/artifacts/dof_darwin_aarch64.tar.gz
+            apps/cli/dist/artifacts/checksums.txt
+            apps/cli/dist/artifacts/checksums.txt.sig

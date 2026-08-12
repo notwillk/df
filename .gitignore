@@ -4,3 +4,7 @@
 .moon/docker
 node_modules
 .schemas
+
+# rust
+target
+/apps/cli/dist/
