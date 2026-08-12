@@ -229,12 +229,14 @@ features:
     assert!(second.status.success(), "{}", stderr(&second));
     assert_summary(&second, 0, 1);
 
+    let alpha_directory = fixture.workspace.join("alpha").canonicalize().unwrap();
+    let zeta_directory = fixture.workspace.join("zeta").canonicalize().unwrap();
     let expected = format!(
         "alpha:{}\nzeta:{}\nalpha:{}\nzeta:{}\n",
-        fixture.workspace.join("alpha").display(),
-        fixture.workspace.join("zeta").display(),
-        fixture.workspace.join("alpha").display(),
-        fixture.workspace.join("zeta").display(),
+        alpha_directory.display(),
+        zeta_directory.display(),
+        alpha_directory.display(),
+        zeta_directory.display(),
     );
     assert_eq!(
         fs::read_to_string(fixture.home.join("script-runs")).unwrap(),

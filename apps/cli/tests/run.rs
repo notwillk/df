@@ -79,6 +79,7 @@ printf 'child stderr\n' >&2
         .write_all(b"first line\nsecond line\n")
         .unwrap();
     let result = child.wait_with_output().unwrap();
+    let canonical_working_directory = working_directory.canonicalize().unwrap();
 
     assert!(result.status.success(), "{}", stderr(&result));
     assert_eq!(
@@ -95,7 +96,7 @@ printf 'child stderr\n' >&2
                 "environment=<inherited value>\n",
                 "cwd=<{}>\n",
             ),
-            working_directory.display()
+            canonical_working_directory.display()
         )
     );
     assert_eq!(stderr(&result), "child stderr\n");
