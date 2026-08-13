@@ -152,14 +152,15 @@ features:
   existing: false
 "#,
         );
+        fs::create_dir(&fixture.features).unwrap();
         match candidate {
             "plain-file" => {
-                fs::write(fixture.workspace.join(candidate), "not a feature\n").unwrap();
+                fs::write(fixture.features.join(candidate), "not a feature\n").unwrap();
             }
             "linked-directory" => {
                 let external = fixture.root.path().join("external-feature");
                 fs::create_dir(&external).unwrap();
-                symlink(external, fixture.workspace.join(candidate)).unwrap();
+                symlink(external, fixture.features.join(candidate)).unwrap();
             }
             "missing" => {}
             _ => unreachable!(),
@@ -181,6 +182,20 @@ features:
         );
         assert_eq!(fs::read(&fixture.config).unwrap(), before);
     }
+}
+
+#[test]
+fn a_legacy_root_feature_does_not_satisfy_feature_enable() {
+    let fixture = Fixture::new();
+    fixture.write_config("repo:\n  url: file:///dotfiles\n  branch: main\nfeatures: {}\n");
+    fs::create_dir_all(fixture.workspace.join("default/home")).unwrap();
+    let before = fs::read(&fixture.config).unwrap();
+
+    let result = output(dof(&fixture.home).args(["feature", "enable", "default"]));
+
+    assert!(!result.status.success());
+    assert!(stderr(&result).contains("does not exist in workspace"));
+    assert_eq!(fs::read(&fixture.config).unwrap(), before);
 }
 
 #[test]
@@ -239,7 +254,7 @@ fn managed_state_symlinks_are_rejected_without_touching_their_targets() {
     let home = state_fixture.path().join("home");
     let external_state = state_fixture.path().join("external-state");
     fs::create_dir(&home).unwrap();
-    fs::create_dir_all(external_state.join("workspace/default")).unwrap();
+    fs::create_dir_all(external_state.join("workspace/features/default")).unwrap();
     let external_config = external_state.join("config.yaml");
     fs::write(
         &external_config,
@@ -260,7 +275,7 @@ fn managed_state_symlinks_are_rejected_without_touching_their_targets() {
         .write_config("repo:\n  url: file:///dotfiles\n  branch: main\nfeatures: {}\n");
     fs::remove_dir(&workspace_fixture.workspace).unwrap();
     let external_workspace = workspace_fixture.root.path().join("external-workspace");
-    fs::create_dir_all(external_workspace.join("default")).unwrap();
+    fs::create_dir_all(external_workspace.join("features/default")).unwrap();
     symlink(&external_workspace, &workspace_fixture.workspace).unwrap();
     let before = fs::read(&workspace_fixture.config).unwrap();
 
@@ -269,7 +284,7 @@ fn managed_state_symlinks_are_rejected_without_touching_their_targets() {
     assert!(!result.status.success());
     assert!(stderr(&result).contains("not a real directory"));
     assert_eq!(fs::read(&workspace_fixture.config).unwrap(), before);
-    assert!(external_workspace.join("default").is_dir());
+    assert!(external_workspace.join("features/default").is_dir());
 
     let config_fixture = Fixture::new();
     config_fixture.create_feature("default");

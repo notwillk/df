@@ -24,7 +24,7 @@ fn features_help_describes_json_and_rejects_arguments() {
 }
 
 #[test]
-fn omitted_feature_settings_enable_sorted_workspace_directories() {
+fn omitted_feature_settings_enable_sorted_feature_directories_only() {
     let fixture = Fixture::new();
     fixture.write_config(
         r#"repo:
@@ -33,18 +33,20 @@ fn omitted_feature_settings_enable_sorted_workspace_directories() {
 "#,
     );
     for feature in ["zeta", "default", "alpha"] {
-        fs::create_dir(fixture.workspace.join(feature)).unwrap();
+        fixture.create_feature(feature);
     }
     fs::create_dir(fixture.workspace.join(".git")).unwrap();
-    fs::create_dir_all(fixture.workspace.join("alpha/nested")).unwrap();
+    fs::create_dir(fixture.workspace.join("docs")).unwrap();
+    fs::create_dir_all(fixture.workspace.join("legacy/home")).unwrap();
+    fs::create_dir_all(fixture.feature("alpha").join("nested")).unwrap();
     fs::write(fixture.workspace.join("README.md"), "not a feature\n").unwrap();
 
     let external = fixture.root.path().join("external-feature");
     fs::create_dir(&external).unwrap();
-    symlink(&external, fixture.workspace.join("linked")).unwrap();
+    symlink(&external, fixture.features.join("linked")).unwrap();
     symlink(
         fixture.root.path().join("missing-feature"),
-        fixture.workspace.join("dangling"),
+        fixture.features.join("dangling"),
     )
     .unwrap();
 
@@ -68,7 +70,7 @@ features:
 "#,
     );
     for feature in ["work", "default", "laptop"] {
-        fs::create_dir(fixture.workspace.join(feature)).unwrap();
+        fixture.create_feature(feature);
     }
 
     let result = output(dof(&fixture.home).args(["features", "--json"]));
@@ -140,7 +142,7 @@ fn symlinked_state_directory_is_rejected_without_following_it() {
     let fixture = tempfile::tempdir().unwrap();
     let home = fixture.path().join("home");
     let external_state = fixture.path().join("external-state");
-    fs::create_dir_all(external_state.join("workspace/default")).unwrap();
+    fs::create_dir_all(external_state.join("workspace/features/default")).unwrap();
     fs::write(
         external_state.join("config.yaml"),
         "repo:\n  url: file:///dotfiles\n  branch: main\n",
@@ -153,8 +155,24 @@ fn symlinked_state_directory_is_rejected_without_following_it() {
 
     assert!(!result.status.success());
     assert!(stderr(&result).contains("is not a real directory"));
-    assert!(external_state.join("workspace/default").is_dir());
+    assert!(external_state.join("workspace/features/default").is_dir());
     assert!(external_state.join("config.yaml").is_file());
+}
+
+#[test]
+fn a_symlinked_features_directory_is_rejected_without_following_it() {
+    let fixture = Fixture::new();
+    fixture.write_config("repo:\n  url: file:///dotfiles\n  branch: main\n");
+    let external = fixture.root.path().join("external-features");
+    fs::create_dir_all(external.join("default")).unwrap();
+    symlink(&external, &fixture.features).unwrap();
+
+    let result = output(dof(&fixture.home).arg("features"));
+
+    assert!(!result.status.success());
+    assert!(stderr(&result).contains("features directory"));
+    assert!(stderr(&result).contains("not a real directory"));
+    assert!(external.join("default").is_dir());
 }
 
 // macOS filesystems reject this byte sequence before dof can inspect it.
@@ -168,8 +186,9 @@ fn non_utf8_feature_name_fails_clearly() {
   branch: main
 "#,
     );
+    fs::create_dir(&fixture.features).unwrap();
     let name = std::ffi::OsString::from_vec(vec![b'f', 0x80]);
-    fs::create_dir(fixture.workspace.join(name)).unwrap();
+    fs::create_dir(fixture.features.join(name)).unwrap();
 
     let result = output(dof(&fixture.home).arg("features"));
 
@@ -186,7 +205,8 @@ fn feature_name_with_control_characters_fails_clearly() {
   branch: main
 "#,
     );
-    fs::create_dir(fixture.workspace.join("first\nsecond")).unwrap();
+    fs::create_dir(&fixture.features).unwrap();
+    fs::create_dir(fixture.features.join("first\nsecond")).unwrap();
 
     let result = output(dof(&fixture.home).arg("features"));
 

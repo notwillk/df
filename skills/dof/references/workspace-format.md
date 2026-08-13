@@ -5,21 +5,27 @@ features. The repository checkout lives at `$HOME/.dof/workspace`.
 
 ## Layout and feature selection
 
-Each real top-level directory, except the workspace root's `.git`, is a
-feature. `default` is conventional, not required. A feature may contain any of
-these declarations:
+Feature declarations live only in `workspace/features/`. Each real directory
+immediately inside that container is a feature. `default` is conventional,
+not required. Repository-level content outside `features/` is not interpreted
+as a feature, so documentation and support scripts may live alongside it. A
+missing or empty `features/` directory represents a workspace with no
+features. Pass the workspace repository root—not the `features/` directory—to
+`dof lint`. A feature may contain any of these declarations:
 
 ```text
 workspace/
-├── default/
-│   ├── home/
-│   │   ├── .bashrc
-│   │   └── .config/tool/settings.yaml
-│   ├── snippets.yaml
-│   └── apply
-└── work/
-    └── home/
-        └── .gitconfig
+├── README.md
+└── features/
+    ├── default/
+    │   ├── home/
+    │   │   ├── .bashrc
+    │   │   └── .config/tool/settings.yaml
+    │   ├── snippets.yaml
+    │   └── apply
+    └── work/
+        └── home/
+            └── .gitconfig
 ```
 
 Feature selection is machine-local in `$HOME/.dof/config.yaml`:
@@ -43,11 +49,11 @@ values.
 
 ## Complete-file ownership with `home/`
 
-Every path beneath `<feature>/home/` maps to the same relative path beneath
-the real `$HOME`:
+Every path beneath `features/<feature>/home/` maps to the same relative path
+beneath the real `$HOME`:
 
 ```text
-default/home/.config/tool/settings.yaml
+features/default/home/.config/tool/settings.yaml
     -> $HOME/.config/tool/settings.yaml
 ```
 
@@ -62,14 +68,14 @@ structural conflicts, such as one feature declaring `.config/tool` as a file
 while another declares `.config/tool/settings.yaml`.
 
 Never create a feature named `.dof` or a payload rooted at
-`<feature>/home/.dof`. Dof state, configuration, workspaces, binaries, and
-backups cannot manage themselves.
+`features/<feature>/home/.dof`. Dof state, configuration, workspaces,
+binaries, and backups cannot manage themselves.
 
 ## Append-if-absent text with `snippets.yaml`
 
-An optional `<feature>/snippets.yaml` is a real UTF-8 regular file containing
-a top-level `snippets` mapping. Each key is a safe `$HOME`-relative target and
-each value is an array of strings:
+An optional `features/<feature>/snippets.yaml` is a real UTF-8 regular file
+containing a top-level `snippets` mapping. Each key is a safe `$HOME`-relative
+target and each value is an array of strings:
 
 ```yaml
 snippets:
@@ -103,8 +109,8 @@ creates a missing snippet target with mode `0600`.
 
 ## Imperative `apply` hook
 
-An optional `<feature>/apply` must be a real regular file, start with `#!`, and
-have an execute bit. For example:
+An optional `features/<feature>/apply` must be a real regular file, start with
+`#!`, and have an execute bit. For example:
 
 ```sh
 #!/bin/sh

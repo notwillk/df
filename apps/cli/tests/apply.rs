@@ -42,7 +42,7 @@ features:
         "enabled: true\n",
     )
     .unwrap();
-    fs::create_dir(fixture.workspace.join("no-home")).unwrap();
+    fixture.create_feature("no-home");
 
     let enabled = fixture.feature_home("explicitly-enabled");
     fs::create_dir_all(enabled.join("bin")).unwrap();
@@ -185,11 +185,38 @@ features:
 #[test]
 fn empty_workspace_applies_nothing() {
     let fixture = Fixture::new();
+    fs::create_dir_all(fixture.workspace.join("default/home")).unwrap();
+    fs::write(
+        fixture.workspace.join("default/home/legacy.txt"),
+        "legacy layout\n",
+    )
+    .unwrap();
 
     let result = output(dof(&fixture.home).arg("apply"));
 
     assert!(result.status.success(), "{}", stderr(&result));
     assert_eq!(stdout(&result), "applied: 0\nunchanged: 0\n");
+    assert!(!fixture.home.join("legacy.txt").exists());
+    assert!(backup_snapshots(&fixture).is_empty());
+}
+
+#[test]
+fn a_symlinked_features_directory_fails_before_mutating_home() {
+    let fixture = Fixture::new();
+    let external = fixture.root.path().join("external-features");
+    fs::create_dir_all(external.join("default/home")).unwrap();
+    fs::write(external.join("default/home/sentinel"), "new\n").unwrap();
+    fs::write(fixture.home.join("sentinel"), "old\n").unwrap();
+    symlink(&external, &fixture.features).unwrap();
+
+    let result = output(dof(&fixture.home).arg("apply"));
+
+    assert!(!result.status.success());
+    assert!(stderr(&result).contains("features directory"));
+    assert_eq!(
+        fs::read_to_string(fixture.home.join("sentinel")).unwrap(),
+        "old\n"
+    );
     assert!(backup_snapshots(&fixture).is_empty());
 }
 
@@ -229,8 +256,8 @@ features:
     assert!(second.status.success(), "{}", stderr(&second));
     assert_summary(&second, 0, 1);
 
-    let alpha_directory = fixture.workspace.join("alpha").canonicalize().unwrap();
-    let zeta_directory = fixture.workspace.join("zeta").canonicalize().unwrap();
+    let alpha_directory = fixture.feature("alpha").canonicalize().unwrap();
+    let zeta_directory = fixture.feature("zeta").canonicalize().unwrap();
     let expected = format!(
         "alpha:{}\nzeta:{}\nalpha:{}\nzeta:{}\n",
         alpha_directory.display(),

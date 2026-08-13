@@ -38,7 +38,7 @@ pub(crate) fn set_enabled(name: &str, enabled: bool) -> Result<()> {
             .into_iter()
             .any(|feature| feature.name == name);
         if !exists {
-            bail!("feature {name:?} does not exist in workspace");
+            bail!("feature {name:?} does not exist in workspace features directory");
         }
         config.set_feature_enabled(name, enabled);
         Ok(())
