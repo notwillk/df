@@ -34,6 +34,15 @@ assert_contains() {
     fail "$description (missing '$expected')"
 }
 
+assert_not_contains() {
+  local file="$1"
+  local unexpected="$2"
+  local description="$3"
+  if grep -F -- "$unexpected" "$file" >/dev/null; then
+    fail "$description (found '$unexpected')"
+  fi
+}
+
 link_tool() {
   local destination="$1"
   local name="$2"
@@ -62,20 +71,30 @@ if [[ ${1:-} == --version ]]; then
   printf 'cross 0.2.5\n'
   exit 0
 fi
-printf 'cross CROSS_CONFIG=%s %s\n' "${CROSS_CONFIG:-}" "$*" >>"$MOCK_LOG"
+printf 'cross cwd=%s CROSS_CONFIG=%s %s\n' "$(pwd -P)" "${CROSS_CONFIG:-}" "$*" >>"$MOCK_LOG"
 [[ ${CROSS_CONFIG:-} == "$MOCK_PROJECT_ROOT/Cross.toml" ]]
+[[ $(pwd -P) == "$MOCK_WORKSPACE_ROOT" ]]
+[[ -f Cargo.toml ]]
 target=
 while [[ $# -gt 0 ]]; do
-  if [[ $1 == --target ]]; then
-    target="$2"
-    break
-  fi
-  shift
+  case "$1" in
+    --manifest-path | --manifest-path=*)
+      printf 'Cross must discover Cargo.toml from the workspace working directory\n' >&2
+      exit 1
+      ;;
+    --target)
+      target="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
 done
 [[ -n $target ]]
-mkdir -p "$MOCK_WORKSPACE_ROOT/target/$target/release"
-printf '#!/usr/bin/env sh\nexit 0\n' >"$MOCK_WORKSPACE_ROOT/target/$target/release/dof"
-chmod +x "$MOCK_WORKSPACE_ROOT/target/$target/release/dof"
+mkdir -p "$PWD/target/$target/release"
+printf '#!/usr/bin/env sh\nexit 0\n' >"$PWD/target/$target/release/dof"
+chmod +x "$PWD/target/$target/release/dof"
 EOF
 
 cat >"$mock_bin/cargo" <<'EOF'
@@ -137,14 +156,17 @@ run_packaging_case() {
   rm -rf -- "$dist" "$extract" "$fixture/target"
   mkdir -p "$extract"
   : >"$log"
-  env \
-    PATH="$mock_bin" \
-    MOCK_LOG="$log" \
-    MOCK_OS="$os" \
-    MOCK_ARCH="$arch" \
-    MOCK_PROJECT_ROOT="$fixture/apps/cli" \
-    MOCK_WORKSPACE_ROOT="$fixture" \
-    "$fixture/apps/cli/scripts/cross-compile.sh" "$target" >/dev/null
+  (
+    cd "$test_root"
+    env \
+      PATH="$mock_bin" \
+      MOCK_LOG="$log" \
+      MOCK_OS="$os" \
+      MOCK_ARCH="$arch" \
+      MOCK_PROJECT_ROOT="$fixture/apps/cli" \
+      MOCK_WORKSPACE_ROOT="$fixture" \
+      "$fixture/apps/cli/scripts/cross-compile.sh" "$target" >/dev/null
+  )
 
   [[ -f $dist/$artifact_stem.tar.gz ]] || fail "$target archive name is incorrect"
   [[ -f $dist/$artifact_stem-checksum.txt ]] || fail "$target checksum name is incorrect"
@@ -159,8 +181,11 @@ run_packaging_case() {
   assert_contains "$log" "shasum -a 256" "$target uses the portable shasum fallback"
 
   if [[ $os == Linux ]]; then
-    assert_contains "$log" "CROSS_CONFIG=$fixture/apps/cli/Cross.toml" \
-      "$target explicitly selects the pinned Cross configuration"
+    assert_contains "$log" \
+      "cross cwd=$fixture CROSS_CONFIG=$fixture/apps/cli/Cross.toml" \
+      "$target runs Cross from the workspace with the pinned configuration"
+    assert_not_contains "$log" "--manifest-path" \
+      "$target does not forward a host manifest path into the Cross container"
     assert_contains "$log" "--locked --release --target $target" \
       "$target build is locked"
   else

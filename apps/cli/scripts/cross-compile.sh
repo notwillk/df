@@ -74,13 +74,15 @@ else
   if [[ $installed_cross_version != "cross 0.2.5" ]]; then
     cargo install cross --version 0.2.5 --locked --force
   fi
-  CROSS_CONFIG="$cross_config" cross build \
-    --manifest-path "$workspace_root/Cargo.toml" \
-    --package dof \
-    --bin dof \
-    --locked \
-    --release \
-    --target "$target"
+  (
+    cd "$workspace_root"
+    CROSS_CONFIG="$cross_config" cross build \
+      --package dof \
+      --bin dof \
+      --locked \
+      --release \
+      --target "$target"
+  )
 fi
 
 [[ -f $binary ]] || fail "build did not produce $binary"
