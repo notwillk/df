@@ -5,7 +5,7 @@ features. The repository checkout lives at `$HOME/.dof/workspace`.
 
 ## Layout and feature selection
 
-Feature declarations live only in `workspace/features/`. Each real directory
+Feature declarations live only in `<workspace>/features/`. Each real directory
 immediately inside that container is a feature. `default` is conventional,
 not required. Repository-level content outside `features/` is not interpreted
 as a feature, so documentation and support scripts may live alongside it. A
