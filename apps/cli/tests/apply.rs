@@ -1,13 +1,13 @@
 use std::fs;
 use std::ops::Deref;
 use std::os::unix::fs::symlink;
-use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
 mod support;
 use support::{
-    ManagedStateFixture, binary, dof, full_mode, mode, output, set_mode, stderr, stdout,
+    ManagedStateFixture, binary, create_unix_socket, dof, full_mode, mode, output, set_mode,
+    stderr, stdout,
 };
 
 #[test]
@@ -433,7 +433,7 @@ fn source_symlinks_and_special_files_fail_during_preflight() {
     special_fixture.write_config(config_with_disabled_bad_feature());
     prepare_preflight_sentinel(&special_fixture);
     let bad_home = special_fixture.feature_home("z-bad");
-    let _socket = UnixListener::bind(bad_home.join("socket")).unwrap();
+    let _socket = create_unix_socket(&bad_home.join("socket"));
 
     let result = output(dof(&special_fixture.home).arg("apply"));
     assert!(!result.status.success());

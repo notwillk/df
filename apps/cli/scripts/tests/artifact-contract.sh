@@ -190,6 +190,15 @@ pass 'packaging rejects targets outside the three-target allowlist'
 
 assert_contains "$cross_compile" 'cargo install cross --version 0.2.5 --locked --force' \
   'Cross installation is version pinned'
+assert_contains "$workspace_root/.github/workflows/release.yml" \
+  'cargo test --workspace --locked --no-fail-fast' \
+  'release tests continue after an integration test binary fails'
+assert_contains "$project_root/moon.yml" \
+  'command: cargo test --workspace --locked --no-fail-fast' \
+  'Moon tests continue after an integration test binary fails'
+assert_contains "$project_root/scripts/release.sh" \
+  '"$CARGO_BIN" test --workspace --all-features --locked --no-fail-fast' \
+  'local release tests continue after an integration test binary fails'
 assert_contains "$project_root/Cross.toml" \
   'x86_64-unknown-linux-musl@sha256:77db671d8356a64ae72a3e1415e63f547f26d374fbe3c4762c1cd36c7eac7b99' \
   'x86-64 musl image is digest pinned'

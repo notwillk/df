@@ -1,4 +1,5 @@
 use std::fs;
+#[cfg(target_os = "linux")]
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::symlink;
 use std::process::Command;
@@ -156,6 +157,8 @@ fn symlinked_state_directory_is_rejected_without_following_it() {
     assert!(external_state.join("config.yaml").is_file());
 }
 
+// macOS filesystems reject this byte sequence before dof can inspect it.
+#[cfg(target_os = "linux")]
 #[test]
 fn non_utf8_feature_name_fails_clearly() {
     let fixture = Fixture::new();

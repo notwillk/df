@@ -10,7 +10,7 @@ SHA-256 utility:
 
 ```sh
 curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
-  https://raw.githubusercontent.com/notwillk/df/main/scripts/install.sh | sh
+  https://raw.githubusercontent.com/notwillk/dof/main/scripts/install.sh | sh
 ```
 
 It installs the latest release to `/usr/local/bin`. Set `DOF_VERSION` to an
@@ -18,7 +18,7 @@ exact release tag and `DEST` to a destination directory when needed:
 
 ```sh
 curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
-  https://raw.githubusercontent.com/notwillk/df/main/scripts/install.sh | \
+  https://raw.githubusercontent.com/notwillk/dof/main/scripts/install.sh | \
   DOF_VERSION=v0.1.0 DEST="$HOME/.local/bin" sh
 ```
 
@@ -41,7 +41,7 @@ Install the repository's agent-neutral `dof` skill at user scope. Set
 agentic coding tool:
 
 ```sh
-gh skill install notwillk/df dof \
+gh skill install notwillk/dof dof \
   --agent "$AGENT_SKILL_HOST" \
   --scope user
 ```

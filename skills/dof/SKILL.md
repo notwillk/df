@@ -12,7 +12,7 @@ workspace with the user's home directory.
 
 1. Check that `dof` is available with `command -v dof` and `dof --version`.
    If it is absent, explain that it must be installed and offer the
-   [official installation instructions](https://github.com/notwillk/df#install).
+   [official installation instructions](https://github.com/notwillk/dof#install).
    Do not install it silently.
 2. Consult `dof --help` and the relevant `dof <command> --help` before acting.
    Prefer current CLI help over remembered flags.

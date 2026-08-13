@@ -5,7 +5,7 @@ set -Eeuo pipefail
 readonly PROGRAM_NAME="$(basename "$0")"
 readonly RELEASE_BRANCH="main"
 readonly RELEASE_REMOTE="${DOF_RELEASE_REMOTE:-origin}"
-readonly RELEASE_REPOSITORY="${DOF_RELEASE_REPOSITORY:-notwillk/df}"
+readonly RELEASE_REPOSITORY="${DOF_RELEASE_REPOSITORY:-notwillk/dof}"
 readonly CARGO_BIN="${DOF_RELEASE_CARGO:-cargo}"
 readonly GPG_BIN="${DOF_RELEASE_GPG:-gpg}"
 readonly GH_BIN="${DOF_RELEASE_GH:-gh}"
@@ -251,7 +251,7 @@ git diff --quiet -- Cargo.lock && die 'Cargo.lock did not change during the vers
 printf 'Running release validation...\n'
 "$CARGO_BIN" fmt --all --check
 "$CARGO_BIN" clippy --workspace --all-targets --all-features --locked -- -D warnings
-"$CARGO_BIN" test --workspace --all-features --locked
+"$CARGO_BIN" test --workspace --all-features --locked --no-fail-fast
 git diff --check
 
 git commit -m "Release $tag" -- Cargo.toml Cargo.lock

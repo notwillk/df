@@ -36,7 +36,7 @@ jobs:
         run: ./apps/cli/scripts/ensure-tag-matches-version.sh "$RELEASE_TAG"
 
       - name: Run Rust tests
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --no-fail-fast
 
       - name: Check formatting
         if: matrix.full_checks

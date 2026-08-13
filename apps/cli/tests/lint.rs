@@ -1,6 +1,5 @@
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
-use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
@@ -8,7 +7,7 @@ use tempfile::TempDir;
 
 mod support;
 
-use support::{binary, dof, output, stderr, stdout};
+use support::{binary, create_unix_socket, dof, output, stderr, stdout};
 
 #[test]
 fn lint_help_describes_the_required_directory() {
@@ -192,7 +191,7 @@ fn lint_rejects_special_source_files() {
     let fixture = Fixture::new();
     let home = fixture.feature_home("default");
     let socket_path = home.join("agent.sock");
-    let _socket = UnixListener::bind(&socket_path).unwrap();
+    let _socket = create_unix_socket(&socket_path);
 
     let result = fixture.lint();
 
@@ -280,7 +279,7 @@ fn lint_rejects_non_regular_apply_paths() {
 
     let special = Fixture::new();
     fs::create_dir_all(special.workspace.join("default")).unwrap();
-    let _socket = UnixListener::bind(special.workspace.join("default/apply")).unwrap();
+    let _socket = create_unix_socket(&special.workspace.join("default/apply"));
     let result = special.lint();
     assert!(!result.status.success());
     assert!(stderr(&result).contains("is not a regular file"));

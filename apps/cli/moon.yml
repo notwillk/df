@@ -17,7 +17,7 @@ tasks:
       os: [linux, macos]
 
   test:
-    command: cargo test --workspace --locked
+    command: cargo test --workspace --locked --no-fail-fast
     inputs:
       - "/Cargo.toml"
       - "/Cargo.lock"

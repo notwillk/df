@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -114,6 +115,14 @@ pub fn mode(path: &Path) -> u32 {
 
 pub fn full_mode(path: &Path) -> u32 {
     fs::metadata(path).unwrap().permissions().mode() & 0o7777
+}
+
+pub fn create_unix_socket(path: &Path) -> UnixListener {
+    let staging = tempfile::tempdir().unwrap();
+    let staging_path = staging.path().join("socket");
+    let listener = UnixListener::bind(&staging_path).unwrap();
+    fs::rename(staging_path, path).unwrap();
+    listener
 }
 
 pub fn write_executable(path: &Path, contents: &str) {

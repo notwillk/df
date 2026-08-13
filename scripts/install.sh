@@ -2,7 +2,7 @@
 
 set -eu
 
-REPOSITORY="notwillk/df"
+REPOSITORY="notwillk/dof"
 DEFAULT_DEST="/usr/local/bin"
 
 fail() {
