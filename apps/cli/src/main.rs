@@ -25,7 +25,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Clone a dotfiles repository into the dof workspace
+    /// Clone or update a dotfiles repository in the dof workspace
     Clone(clone::Args),
 
     /// Statically validate a dotfiles workspace
