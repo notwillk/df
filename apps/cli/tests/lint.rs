@@ -30,7 +30,7 @@ fn lint_help_describes_the_required_directory() {
 }
 
 #[test]
-fn lint_accepts_valid_features_and_ignores_only_workspace_metadata() {
+fn lint_accepts_valid_features_and_ignores_workspace_root_content() {
     let fixture = Fixture::new();
     let home = fixture.feature_home("default");
     fs::create_dir_all(home.join("nested")).unwrap();
@@ -38,7 +38,8 @@ fn lint_accepts_valid_features_and_ignores_only_workspace_metadata() {
     fs::write(home.join("nested/settings.yaml"), "value: true\n").unwrap();
     fs::write(home.join(".git/config"), "ordinary payload\n").unwrap();
 
-    fs::create_dir_all(fixture.workspace.join("missing-home")).unwrap();
+    fixture.feature("missing-home");
+    fs::create_dir_all(fixture.workspace.join("legacy/home")).unwrap();
     fs::create_dir_all(fixture.workspace.join(".git/objects")).unwrap();
     symlink(
         &fixture.workspace,
@@ -48,7 +49,7 @@ fn lint_accepts_valid_features_and_ignores_only_workspace_metadata() {
 
     let external = fixture.root.path().join("external-feature");
     fs::create_dir(&external).unwrap();
-    symlink(&external, fixture.workspace.join("linked-feature")).unwrap();
+    symlink(&external, fixture.features.join("linked-feature")).unwrap();
 
     let result = fixture.lint();
 
@@ -66,6 +67,34 @@ fn lint_accepts_a_root_symlink_to_a_directory() {
     let result = output(dof(&fixture.home).arg("lint").arg(link));
 
     assert!(result.status.success(), "{}", stderr(&result));
+}
+
+#[test]
+fn lint_rejects_non_directory_features_paths_without_following_them() {
+    let linked = Fixture::new();
+    fs::create_dir_all(&linked.workspace).unwrap();
+    let external = linked.root.path().join("external-features");
+    fs::create_dir_all(external.join("default")).unwrap();
+    symlink(&external, &linked.features).unwrap();
+    let root_link = linked.root.path().join("workspace-link");
+    symlink(&linked.workspace, &root_link).unwrap();
+
+    let result = output(dof(&linked.home).arg("lint").arg(root_link));
+
+    assert!(!result.status.success());
+    assert!(stderr(&result).contains("features directory"));
+    assert!(stderr(&result).contains("not a real directory"));
+    assert!(external.join("default").is_dir());
+
+    let file = Fixture::new();
+    fs::create_dir_all(&file.workspace).unwrap();
+    fs::write(&file.features, "not a directory\n").unwrap();
+
+    let result = file.lint();
+
+    assert!(!result.status.success());
+    assert!(stderr(&result).contains("features directory"));
+    assert!(stderr(&result).contains("not a real directory"));
 }
 
 #[test]
@@ -204,7 +233,7 @@ fn lint_rejects_special_source_files() {
 #[test]
 fn lint_requires_home_to_be_a_real_directory_when_present() {
     let fixture = Fixture::new();
-    let feature = fixture.workspace.join("default");
+    let feature = fixture.feature("default");
     let external = fixture.root.path().join("external-home");
     fs::create_dir_all(&feature).unwrap();
     fs::create_dir(&external).unwrap();
@@ -263,7 +292,7 @@ fn lint_requires_apply_scripts_to_begin_with_a_shebang() {
 #[test]
 fn lint_rejects_non_regular_apply_paths() {
     let directory = Fixture::new();
-    fs::create_dir_all(directory.workspace.join("default/apply")).unwrap();
+    fs::create_dir_all(directory.feature("default").join("apply")).unwrap();
     let result = directory.lint();
     assert!(!result.status.success());
     assert!(stderr(&result).contains("is not a regular file"));
@@ -271,15 +300,15 @@ fn lint_rejects_non_regular_apply_paths() {
     let link = Fixture::new();
     let external = link.root.path().join("external-apply");
     fs::write(&external, "#!/bin/sh\nexit 0\n").unwrap();
-    fs::create_dir_all(link.workspace.join("default")).unwrap();
-    symlink(&external, link.workspace.join("default/apply")).unwrap();
+    let feature = link.feature("default");
+    symlink(&external, feature.join("apply")).unwrap();
     let result = link.lint();
     assert!(!result.status.success());
     assert!(stderr(&result).contains("is not a regular file"));
 
     let special = Fixture::new();
-    fs::create_dir_all(special.workspace.join("default")).unwrap();
-    let _socket = create_unix_socket(&special.workspace.join("default/apply"));
+    let feature = special.feature("default");
+    let _socket = create_unix_socket(&feature.join("apply"));
     let result = special.lint();
     assert!(!result.status.success());
     assert!(stderr(&result).contains("is not a regular file"));
@@ -340,7 +369,7 @@ fn lint_rejects_invalid_snippets_schemas() {
 #[test]
 fn lint_rejects_non_regular_snippets_files() {
     let directory = Fixture::new();
-    fs::create_dir_all(directory.workspace.join("default/snippets.yaml")).unwrap();
+    fs::create_dir_all(directory.feature("default").join("snippets.yaml")).unwrap();
     let result = directory.lint();
     assert!(!result.status.success());
     assert!(stderr(&result).contains("snippets"));
@@ -349,8 +378,8 @@ fn lint_rejects_non_regular_snippets_files() {
     let link = Fixture::new();
     let external = link.root.path().join("external-snippets.yaml");
     fs::write(&external, "snippets: {}\n").unwrap();
-    fs::create_dir_all(link.workspace.join("default")).unwrap();
-    symlink(&external, link.workspace.join("default/snippets.yaml")).unwrap();
+    let feature = link.feature("default");
+    symlink(&external, feature.join("snippets.yaml")).unwrap();
     let result = link.lint();
     assert!(!result.status.success());
     assert!(stderr(&result).contains("snippets"));
@@ -483,6 +512,7 @@ struct Fixture {
     root: TempDir,
     home: PathBuf,
     workspace: PathBuf,
+    features: PathBuf,
 }
 
 impl Fixture {
@@ -490,16 +520,24 @@ impl Fixture {
         let root = tempfile::tempdir().unwrap();
         let home = root.path().join("home");
         let workspace = home.join(".dof/workspace");
+        let features = workspace.join("features");
         fs::create_dir(&home).unwrap();
         Self {
             root,
             home,
             workspace,
+            features,
         }
     }
 
+    fn feature(&self, feature: &str) -> PathBuf {
+        let feature = self.features.join(feature);
+        fs::create_dir_all(&feature).unwrap();
+        feature
+    }
+
     fn feature_home(&self, feature: &str) -> PathBuf {
-        let home = self.workspace.join(feature).join("home");
+        let home = self.feature(feature).join("home");
         fs::create_dir_all(&home).unwrap();
         home
     }
@@ -509,7 +547,7 @@ impl Fixture {
     }
 
     fn write_apply_script(&self, feature: &str, contents: &str, mode: u32) {
-        let feature = self.workspace.join(feature);
+        let feature = self.feature(feature);
         fs::create_dir_all(&feature).unwrap();
         let path = feature.join("apply");
         fs::write(&path, contents).unwrap();
@@ -519,7 +557,7 @@ impl Fixture {
     }
 
     fn write_snippets(&self, feature: &str, contents: &str) {
-        let feature = self.workspace.join(feature);
+        let feature = self.feature(feature);
         fs::create_dir_all(&feature).unwrap();
         fs::write(feature.join("snippets.yaml"), contents).unwrap();
     }

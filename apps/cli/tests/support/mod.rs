@@ -24,6 +24,7 @@ pub struct ManagedStateFixture {
     pub home: PathBuf,
     pub state_dir: PathBuf,
     pub workspace: PathBuf,
+    pub features: PathBuf,
     pub config: PathBuf,
 }
 
@@ -33,6 +34,7 @@ impl ManagedStateFixture {
         let home = root.path().join("home");
         let state_dir = home.join(".dof");
         let workspace = state_dir.join("workspace");
+        let features = workspace.join("features");
         let config = state_dir.join("config.yaml");
         fs::create_dir_all(&workspace).unwrap();
         Self {
@@ -40,6 +42,7 @@ impl ManagedStateFixture {
             home,
             state_dir,
             workspace,
+            features,
             config,
         }
     }
@@ -59,11 +62,12 @@ impl ManagedStateFixture {
     }
 
     pub fn create_feature(&self, name: &str) {
-        fs::create_dir(self.workspace.join(name)).unwrap();
+        fs::create_dir_all(&self.features).unwrap();
+        fs::create_dir(self.features.join(name)).unwrap();
     }
 
     pub fn feature(&self, name: &str) -> PathBuf {
-        let path = self.workspace.join(name);
+        let path = self.features.join(name);
         fs::create_dir_all(&path).unwrap();
         path
     }

@@ -82,13 +82,16 @@ existing workspace and config without restoring them if the new clone fails.
 Read [the workspace format reference](references/workspace-format.md) before
 creating or changing feature declarations. Choose one mechanism for each need:
 
-- Put a complete file under `<feature>/home/**` when dof should own its full
-  contents.
-- Put exact append-if-absent text in `<feature>/snippets.yaml` when dof should
-  preserve unrelated content in a text file.
-- Put imperative setup in an executable, shebang-bearing `<feature>/apply`
-  hook only when declarative files or snippets are insufficient. Make the hook
-  idempotent because it runs on every apply.
+- Put each feature at `features/<feature>/`; repository content outside
+  `features/` does not declare features. The container may be absent or empty
+  when the workspace has no features.
+- Put a complete file under `features/<feature>/home/**` when dof should own
+  its full contents.
+- Put exact append-if-absent text in `features/<feature>/snippets.yaml` when
+  dof should preserve unrelated content in a text file.
+- Put imperative setup in an executable, shebang-bearing
+  `features/<feature>/apply` hook only when declarative files or snippets are
+  insufficient. Make the hook idempotent because it runs on every apply.
 
 Never declare anything under `$HOME/.dof` through a `home/` payload or snippet.
 After editing, run lint and fix all errors before proposing an apply.
@@ -102,8 +105,9 @@ dof feature enable <feature>
 dof feature disable <feature>
 ```
 
-The feature must already be a real top-level workspace directory. An omitted
-feature setting defaults to enabled; an explicit `false` is respected.
+The feature must already be a real directory immediately beneath the
+workspace's `features/` directory. An omitted feature setting defaults to
+enabled; an explicit `false` is respected.
 
 ## Apply safely
 

@@ -103,9 +103,12 @@ state is not backed up or restored if the new clone fails.
 
 ## List enabled features
 
-Each real, top-level directory in `$HOME/.dof/workspace` is a feature. The
-`default` feature is conventional, but no feature directory is required.
-Git metadata, files, and symlinks are not treated as features.
+Feature definitions live under `$HOME/.dof/workspace/features`. Each real
+directory immediately inside that directory is a feature. The `default`
+feature is conventional, but no feature is required. Repository content
+outside `features/`, plus files and symlinks inside it, is not treated
+as a feature. An absent or empty `features/` directory represents a workspace
+with no features.
 
 Feature overrides live in `$HOME/.dof/config.yaml`:
 
@@ -116,7 +119,7 @@ features:
 ```
 
 An omitted `features` section or omitted feature name defaults to enabled.
-An explicit `false` disables the corresponding workspace directory.
+An explicit `false` disables the corresponding feature.
 
 ```sh
 dof features
@@ -133,9 +136,9 @@ dof feature enable <feature>
 dof feature disable <feature>
 ```
 
-The named feature must already exist as a real top-level directory in
-`$HOME/.dof/workspace`. These commands write an explicit `true` or `false`
-entry for the feature in `$HOME/.dof/config.yaml`.
+The named feature must already exist as a real directory at
+`$HOME/.dof/workspace/features/<feature>`. These commands write an explicit
+`true` or `false` entry for the feature in `$HOME/.dof/config.yaml`.
 
 Feature settings determine which features are selected by `dof features` and
 `dof apply`. Workspace linting continues to validate every feature, including
@@ -148,13 +151,14 @@ Files under each enabled feature's `home/` directory map directly into
 
 ```text
 $HOME/.dof/workspace/
-├── default/
-│   └── home/
-│       ├── .bashrc
-│       └── .config/tool/settings.yaml
-└── work/
-    └── home/
-        └── .gitconfig
+└── features/
+    ├── default/
+    │   └── home/
+    │       ├── .bashrc
+    │       └── .config/tool/settings.yaml
+    └── work/
+        └── home/
+            └── .gitconfig
 ```
 
 ```sh
@@ -207,9 +211,9 @@ This keeps copy ownership deterministic while still allowing several features
 to contribute independent snippets to one file.
 
 Each feature may also provide an `apply` script at its root, for example
-`default/apply`. It must be a regular executable file whose first line is a
-shebang. Workspace linting validates these requirements for every feature,
-including disabled features.
+`features/default/apply`. It must be a regular executable file whose first
+line is a shebang. Workspace linting validates these requirements for every
+feature, including disabled features.
 
 After all `home/` files have been copied and snippets have been applied, `dof
 apply` runs the scripts from enabled features in lexical feature-name order.
@@ -243,6 +247,9 @@ directly and its exit status is the exit status of `dof run`.
 ```sh
 dof lint <directory>
 ```
+
+Pass the workspace repository root to `dof lint`, not its `features/`
+directory.
 
 `dof lint` performs read-only validation across every feature, including
 features disabled on the current machine. It rejects a feature named `.dof`,

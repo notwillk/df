@@ -156,10 +156,10 @@ enum ClaimKind {
     Snippet { strings: Vec<String> },
 }
 
-/// Discovers real top-level feature directories in deterministic name order.
+/// Discovers real directories beneath `<workspace>/features` in name order.
 ///
-/// Entries named `.git` are ignored only at this level. Other non-directory
-/// entries and directory symlinks are not features and are ignored.
+/// A missing features directory means the workspace has no features. A
+/// present features path must be a real directory and is never followed.
 pub(crate) fn discover_features(workspace: &Path) -> Result<Vec<FeatureDirectory>> {
     discover_features_with_root_policy(workspace, false)
 }
@@ -182,19 +182,40 @@ fn discover_features_with_root_policy(
         bail!("workspace {} is not a real directory", workspace.display());
     }
 
-    let mut entries = fs::read_dir(workspace)
-        .with_context(|| format!("failed to read workspace {}", workspace.display()))?
+    let features_root = workspace.join("features");
+    let metadata = match fs::symlink_metadata(&features_root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect features directory {}",
+                    features_root.display()
+                )
+            });
+        }
+    };
+    if !metadata.file_type().is_dir() {
+        bail!(
+            "features directory {} is not a real directory",
+            features_root.display()
+        );
+    }
+
+    let mut entries = fs::read_dir(&features_root)
+        .with_context(|| {
+            format!(
+                "failed to read features directory {}",
+                features_root.display()
+            )
+        })?
         .collect::<std::io::Result<Vec<_>>>()
-        .with_context(|| format!("failed to read entries in {}", workspace.display()))?;
+        .with_context(|| format!("failed to read entries in {}", features_root.display()))?;
     entries.sort_by_key(|entry| entry.file_name());
 
     let mut features = Vec::new();
     for entry in entries {
         let name = entry.file_name();
-        if name == OsStr::new(".git") {
-            continue;
-        }
-
         let path = entry.path();
         let file_type = entry
             .file_type()
@@ -833,10 +854,10 @@ mod tests {
     fn manifest_includes_sorted_files_and_empty_directories() {
         let fixture = tempfile::tempdir().unwrap();
         let workspace = fixture.path().join("workspace");
-        fs::create_dir_all(workspace.join("default/home/z-empty")).unwrap();
-        fs::create_dir_all(workspace.join("default/home/.git")).unwrap();
-        fs::write(workspace.join("default/home/a-file"), "a\n").unwrap();
-        fs::write(workspace.join("default/home/.git/config"), "git\n").unwrap();
+        fs::create_dir_all(workspace.join("features/default/home/z-empty")).unwrap();
+        fs::create_dir_all(workspace.join("features/default/home/.git")).unwrap();
+        fs::write(workspace.join("features/default/home/a-file"), "a\n").unwrap();
+        fs::write(workspace.join("features/default/home/.git/config"), "git\n").unwrap();
 
         let (targets, scripts) = build_manifest(&workspace).unwrap().into_parts();
         assert!(scripts.is_empty());
