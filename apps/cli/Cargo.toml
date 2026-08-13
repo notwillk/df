@@ -10,6 +10,7 @@ name = "dof"
 path = "src/main.rs"
 
 [dependencies]
+aws-lc-rs.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 gix.workspace = true

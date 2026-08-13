@@ -21,6 +21,7 @@ struct Config {
 struct RepoConfig {
     url: String,
     branch: String,
+    endpoint_fingerprint: Option<String>,
 }
 
 #[test]
@@ -74,16 +75,21 @@ fn clones_main_and_writes_default_config() {
         "main\n"
     );
     assert_eq!(current_branch(&fixture.workspace()), "main");
-    assert_eq!(
-        read_config(&fixture.config()),
-        Config {
-            repo: RepoConfig {
-                url: repository_url,
-                branch: "main".into(),
-            },
-            features: BTreeMap::new(),
-        }
+    let config = read_config(&fixture.config());
+    assert_eq!(config.repo.url, repository_url);
+    assert_eq!(config.repo.branch, "main");
+    let fingerprint = config
+        .repo
+        .endpoint_fingerprint
+        .expect("fresh clones pin their effective repository endpoint");
+    assert!(fingerprint.starts_with("sha256:"));
+    assert_eq!(fingerprint.len(), "sha256:".len() + 64);
+    assert!(
+        fingerprint["sha256:".len()..]
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
     );
+    assert_eq!(config.features, BTreeMap::new());
 }
 
 #[test]
@@ -109,6 +115,28 @@ fn clones_a_custom_branch_with_short_or_long_flag() {
 }
 
 #[test]
+fn clone_fetches_unreachable_tags_without_persisting_a_tag_policy() {
+    let fixture = Fixture::new();
+    init_repository(&fixture.repository);
+    let tag = "unreachable-v1";
+    let expected_tag = create_unreachable_tag(&fixture.repository, tag);
+
+    let result = output(
+        dof(&fixture.home)
+            .arg("clone")
+            .arg(fixture.repository_url()),
+    );
+
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert_eq!(revision(&fixture.workspace(), tag), expected_tag);
+    assert!(
+        !fs::read_to_string(fixture.workspace().join(".git/config"))
+            .unwrap()
+            .contains("tagOpt")
+    );
+}
+
+#[test]
 fn branch_argument_is_treated_only_as_a_branch_name() {
     let fixture = Fixture::new();
     init_repository(&fixture.repository);
@@ -126,6 +154,634 @@ fn branch_argument_is_treated_only_as_a_branch_name() {
     assert!(!result.status.success());
     assert_ne!(result.status.code(), Some(101), "gix must not panic");
     assert_no_managed_state(&fixture);
+}
+
+#[test]
+fn same_repository_fast_forwards_without_recloning_or_rewriting_config() {
+    let fixture = Fixture::new();
+    init_repository(&fixture.repository);
+    let repository_url = fixture.repository_url();
+
+    let initial = output(dof(&fixture.home).arg("clone").arg(&repository_url));
+    assert!(initial.status.success(), "{}", stderr(&initial));
+
+    let config = format!(
+        "repo:\n  url: {repository_url}\n  branch: main\nfeatures:\n  default: false\nfuture:\n  keep: true\n"
+    );
+    fs::write(fixture.config(), &config).unwrap();
+    fs::write(fixture.workspace().join("local-only.txt"), "preserve\n").unwrap();
+
+    fs::write(fixture.repository.join("tracked.txt"), "updated\n").unwrap();
+    git(Some(&fixture.repository), ["add", "tracked.txt"]);
+    commit(&fixture.repository, "update");
+    let expected_head = head(&fixture.repository);
+
+    let result = output(dof(&fixture.home).arg("clone").arg(&repository_url));
+
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert_eq!(
+        stdout(&result).trim(),
+        fixture.workspace().display().to_string()
+    );
+    assert_eq!(head(&fixture.workspace()), expected_head);
+    assert_eq!(
+        fs::read_to_string(fixture.workspace().join("tracked.txt")).unwrap(),
+        "updated\n"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.workspace().join("local-only.txt")).unwrap(),
+        "preserve\n"
+    );
+    assert_eq!(fs::read_to_string(fixture.config()).unwrap(), config);
+}
+
+#[test]
+fn same_repository_at_latest_or_locally_ahead_is_not_rewound() {
+    let fixture = Fixture::new();
+    init_repository(&fixture.repository);
+    let repository_url = fixture.repository_url();
+    let initial = output(dof(&fixture.home).arg("clone").arg(&repository_url));
+    assert!(initial.status.success(), "{}", stderr(&initial));
+
+    let current = head(&fixture.workspace());
+    let current_config = fs::read(fixture.config()).unwrap();
+    let at_latest = output(dof(&fixture.home).arg("clone").arg(&repository_url));
+    assert!(at_latest.status.success(), "{}", stderr(&at_latest));
+    assert_eq!(head(&fixture.workspace()), current);
+    assert_eq!(fs::read(fixture.config()).unwrap(), current_config);
+
+    fs::write(fixture.workspace().join("tracked.txt"), "local ahead\n").unwrap();
+    git(Some(&fixture.workspace()), ["add", "tracked.txt"]);
+    commit(&fixture.workspace(), "local ahead");
+    let local_head = head(&fixture.workspace());
+
+    let ahead = output(dof(&fixture.home).arg("clone").arg(&repository_url));
+
+    assert!(ahead.status.success(), "{}", stderr(&ahead));
+    assert_eq!(head(&fixture.workspace()), local_head);
+    assert_eq!(
+        fs::read_to_string(fixture.workspace().join("tracked.txt")).unwrap(),
+        "local ahead\n"
+    );
+    assert_eq!(fs::read(fixture.config()).unwrap(), current_config);
+}
+
+#[test]
+fn divergent_repository_fails_without_changing_checkout_or_config() {
+    let fixture = Fixture::new();
+    init_repository(&fixture.repository);
+    let repository_url = fixture.repository_url();
+    let initial = output(dof(&fixture.home).arg("clone").arg(&repository_url));
+    assert!(initial.status.success(), "{}", stderr(&initial));
+
+    fs::write(fixture.workspace().join("tracked.txt"), "local\n").unwrap();
+    git(Some(&fixture.workspace()), ["add", "tracked.txt"]);
+    commit(&fixture.workspace(), "local");
+    let local_head = head(&fixture.workspace());
+    let config = fs::read(fixture.config()).unwrap();
+
+    fs::write(fixture.repository.join("tracked.txt"), "remote\n").unwrap();
+    git(Some(&fixture.repository), ["add", "tracked.txt"]);
+    commit(&fixture.repository, "remote");
+
+    let result = output(dof(&fixture.home).arg("clone").arg(&repository_url));
+
+    assert!(!result.status.success());
+    assert!(stderr(&result).contains("diverged"));
+    assert_eq!(head(&fixture.workspace()), local_head);
+    assert_eq!(
+        fs::read_to_string(fixture.workspace().join("tracked.txt")).unwrap(),
+        "local\n"
+    );
+    assert_eq!(fs::read(fixture.config()).unwrap(), config);
+}
+
+#[test]
+fn a_different_repository_or_branch_fails_without_changing_the_installation() {
+    let fixture = Fixture::new();
+    init_repository(&fixture.repository);
+    let repository_url = fixture.repository_url();
+    let initial = output(dof(&fixture.home).arg("clone").arg(&repository_url));
+    assert!(initial.status.success(), "{}", stderr(&initial));
+    let original_head = head(&fixture.workspace());
+    let original_config = fs::read(fixture.config()).unwrap();
+
+    let other_repository = fixture.root.path().join("other-repository");
+    init_repository(&other_repository);
+    let different_repository = output(
+        dof(&fixture.home)
+            .arg("clone")
+            .arg(file_url(&other_repository)),
+    );
+    assert!(!different_repository.status.success());
+    assert!(stderr(&different_repository).contains("different repository or branch"));
+
+    create_branch(&fixture.repository, "laptop");
+    let different_branch = output(
+        dof(&fixture.home)
+            .args(["clone", "--branch", "laptop"])
+            .arg(&repository_url),
+    );
+    assert!(!different_branch.status.success());
+    assert!(stderr(&different_branch).contains("different repository or branch"));
+
+    assert_eq!(head(&fixture.workspace()), original_head);
+    assert_eq!(fs::read(fixture.config()).unwrap(), original_config);
+}
+
+#[test]
+fn force_replaces_a_complete_installation_from_a_different_repository() {
+    let fixture = Fixture::new();
+    init_repository(&fixture.repository);
+    let first_url = fixture.repository_url();
+    let initial = output(dof(&fixture.home).arg("clone").arg(first_url));
+    assert!(initial.status.success(), "{}", stderr(&initial));
+    fs::write(fixture.workspace().join("local-only.txt"), "remove\n").unwrap();
+
+    let other_repository = fixture.root.path().join("other-repository");
+    init_repository(&other_repository);
+    fs::write(other_repository.join("tracked.txt"), "replacement\n").unwrap();
+    git(Some(&other_repository), ["add", "tracked.txt"]);
+    commit(&other_repository, "replacement");
+    let other_url = file_url(&other_repository);
+
+    let result = output(
+        dof(&fixture.home)
+            .args(["clone", "--force"])
+            .arg(&other_url),
+    );
+
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert!(!fixture.workspace().join("local-only.txt").exists());
+    assert_eq!(head(&fixture.workspace()), head(&other_repository));
+    assert_eq!(
+        fs::read_to_string(fixture.workspace().join("tracked.txt")).unwrap(),
+        "replacement\n"
+    );
+    assert_eq!(read_config(&fixture.config()).repo.url, other_url);
+}
+
+#[test]
+fn failed_force_replacement_does_not_restore_old_managed_state() {
+    let fixture = Fixture::new();
+    init_repository(&fixture.repository);
+    let initial = output(
+        dof(&fixture.home)
+            .arg("clone")
+            .arg(fixture.repository_url()),
+    );
+    assert!(initial.status.success(), "{}", stderr(&initial));
+    fs::write(fixture.state_dir().join("unrelated.txt"), "keep\n").unwrap();
+
+    let result = output(
+        dof(&fixture.home)
+            .args(["clone", "--force"])
+            .arg(file_url(&fixture.root.path().join("missing"))),
+    );
+
+    assert!(!result.status.success());
+    assert_no_managed_state(&fixture);
+    assert_eq!(
+        fs::read_to_string(fixture.state_dir().join("unrelated.txt")).unwrap(),
+        "keep\n"
+    );
+}
+
+#[test]
+fn incomplete_managed_state_fails_without_deleting_the_existing_half() {
+    let workspace_only = Fixture::new();
+    fs::create_dir_all(workspace_only.workspace()).unwrap();
+    fs::write(workspace_only.workspace().join("keep.txt"), "workspace\n").unwrap();
+
+    let result = output(dof(&workspace_only.home).arg("clone").arg("file:///unused"));
+    assert!(!result.status.success());
+    assert!(stderr(&result).contains("state is incomplete"));
+    assert_eq!(
+        fs::read_to_string(workspace_only.workspace().join("keep.txt")).unwrap(),
+        "workspace\n"
+    );
+    assert!(!workspace_only.config().exists());
+
+    let config_only = Fixture::new();
+    fs::create_dir(config_only.state_dir()).unwrap();
+    fs::write(config_only.config(), "keep: config\n").unwrap();
+
+    let result = output(dof(&config_only.home).arg("clone").arg("file:///unused"));
+    assert!(!result.status.success());
+    assert!(stderr(&result).contains("state is incomplete"));
+    assert_eq!(
+        fs::read_to_string(config_only.config()).unwrap(),
+        "keep: config\n"
+    );
+    assert!(!config_only.workspace().exists());
+}
+
+#[test]
+fn update_refuses_an_ignored_file_that_would_be_overwritten() {
+    let fixture = Fixture::new();
+    init_repository(&fixture.repository);
+    fs::write(fixture.repository.join(".gitignore"), "collision.txt\n").unwrap();
+    git(Some(&fixture.repository), ["add", ".gitignore"]);
+    commit(&fixture.repository, "ignore collision");
+    let repository_url = fixture.repository_url();
+    let initial = output(dof(&fixture.home).arg("clone").arg(&repository_url));
+    assert!(initial.status.success(), "{}", stderr(&initial));
+
+    fs::write(fixture.workspace().join("collision.txt"), "local\n").unwrap();
+    let original_head = head(&fixture.workspace());
+    let original_config = fs::read(fixture.config()).unwrap();
+    fs::write(fixture.repository.join("collision.txt"), "remote\n").unwrap();
+    git(
+        Some(&fixture.repository),
+        ["add", "--force", "collision.txt"],
+    );
+    commit(&fixture.repository, "track collision");
+
+    let result = output(dof(&fixture.home).arg("clone").arg(&repository_url));
+
+    assert!(!result.status.success());
+    assert!(stderr(&result).contains("fast-forward"));
+    assert_eq!(head(&fixture.workspace()), original_head);
+    assert_eq!(
+        fs::read_to_string(fixture.workspace().join("collision.txt")).unwrap(),
+        "local\n"
+    );
+    assert_eq!(fs::read(fixture.config()).unwrap(), original_config);
+}
+
+#[test]
+fn update_preserves_nonconflicting_changes_and_refuses_tracked_conflicts() {
+    let nonconflicting = Fixture::new();
+    init_repository(&nonconflicting.repository);
+    let repository_url = nonconflicting.repository_url();
+    let initial = output(dof(&nonconflicting.home).arg("clone").arg(&repository_url));
+    assert!(initial.status.success(), "{}", stderr(&initial));
+    fs::write(nonconflicting.workspace().join("local.txt"), "local\n").unwrap();
+    fs::write(nonconflicting.repository.join("remote.txt"), "remote\n").unwrap();
+    git(Some(&nonconflicting.repository), ["add", "remote.txt"]);
+    commit(&nonconflicting.repository, "remote file");
+
+    let result = output(dof(&nonconflicting.home).arg("clone").arg(&repository_url));
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert_eq!(
+        fs::read_to_string(nonconflicting.workspace().join("local.txt")).unwrap(),
+        "local\n"
+    );
+    assert_eq!(
+        fs::read_to_string(nonconflicting.workspace().join("remote.txt")).unwrap(),
+        "remote\n"
+    );
+
+    let conflicting = Fixture::new();
+    init_repository(&conflicting.repository);
+    let repository_url = conflicting.repository_url();
+    let initial = output(dof(&conflicting.home).arg("clone").arg(&repository_url));
+    assert!(initial.status.success(), "{}", stderr(&initial));
+    fs::write(conflicting.workspace().join("tracked.txt"), "local\n").unwrap();
+    let original_head = head(&conflicting.workspace());
+    fs::write(conflicting.repository.join("tracked.txt"), "remote\n").unwrap();
+    git(Some(&conflicting.repository), ["add", "tracked.txt"]);
+    commit(&conflicting.repository, "remote conflict");
+
+    let result = output(dof(&conflicting.home).arg("clone").arg(&repository_url));
+    assert!(!result.status.success());
+    assert!(stderr(&result).contains("fast-forward"));
+    assert_eq!(head(&conflicting.workspace()), original_head);
+    assert_eq!(
+        fs::read_to_string(conflicting.workspace().join("tracked.txt")).unwrap(),
+        "local\n"
+    );
+}
+
+#[test]
+fn missing_git_during_update_preserves_the_checkout_and_config() {
+    let fixture = Fixture::new();
+    init_repository(&fixture.repository);
+    let repository_url = fixture.repository_url();
+    let initial = output(dof(&fixture.home).arg("clone").arg(&repository_url));
+    assert!(initial.status.success(), "{}", stderr(&initial));
+    let original_head = head(&fixture.workspace());
+    let original_config = fs::read(fixture.config()).unwrap();
+
+    fs::write(fixture.repository.join("tracked.txt"), "updated\n").unwrap();
+    git(Some(&fixture.repository), ["add", "tracked.txt"]);
+    commit(&fixture.repository, "update");
+    let empty_path = fixture.root.path().join("empty-path");
+    fs::create_dir(&empty_path).unwrap();
+
+    let result = output(
+        dof(&fixture.home)
+            .env("PATH", empty_path)
+            .arg("clone")
+            .arg(&repository_url),
+    );
+
+    assert!(!result.status.success());
+    assert!(stderr(&result).contains("failed to execute Git"));
+    assert_eq!(head(&fixture.workspace()), original_head);
+    assert_eq!(
+        fs::read_to_string(fixture.workspace().join("tracked.txt")).unwrap(),
+        "main\n"
+    );
+    assert_eq!(fs::read(fixture.config()).unwrap(), original_config);
+}
+
+#[test]
+fn relative_home_and_repository_can_be_updated() {
+    let fixture = Fixture::new();
+    init_repository(&fixture.repository);
+    let mut clone = Command::new(binary());
+    clone
+        .current_dir(fixture.root.path())
+        .env("HOME", "home")
+        .args(["clone", "repository"]);
+    let initial = output(&mut clone);
+    assert!(initial.status.success(), "{}", stderr(&initial));
+
+    fs::write(fixture.repository.join("tracked.txt"), "updated\n").unwrap();
+    git(Some(&fixture.repository), ["add", "tracked.txt"]);
+    commit(&fixture.repository, "update");
+
+    let mut update = Command::new(binary());
+    update
+        .current_dir(fixture.root.path())
+        .env("HOME", "home")
+        .args(["clone", "repository"]);
+    let result = output(&mut update);
+
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert_eq!(head(&fixture.workspace()), head(&fixture.repository));
+    assert_eq!(read_config(&fixture.config()).repo.url, "repository");
+}
+
+#[test]
+fn update_uses_the_branch_configured_remote_even_when_it_is_not_origin() {
+    let fixture = Fixture::new();
+    init_repository(&fixture.repository);
+    fs::write(
+        fixture.home.join(".gitconfig"),
+        "[clone]\n\tdefaultRemoteName = upstream\n",
+    )
+    .unwrap();
+    let repository_url = fixture.repository_url();
+    let initial = output(dof(&fixture.home).arg("clone").arg(&repository_url));
+    assert!(initial.status.success(), "{}", stderr(&initial));
+    assert_eq!(
+        stdout(&git(Some(&fixture.workspace()), ["remote"])).trim(),
+        "upstream"
+    );
+
+    fs::write(fixture.repository.join("tracked.txt"), "updated\n").unwrap();
+    git(Some(&fixture.repository), ["add", "tracked.txt"]);
+    commit(&fixture.repository, "update");
+
+    let result = output(dof(&fixture.home).arg("clone").arg(&repository_url));
+
+    assert!(result.status.success(), "{}", stderr(&result));
+    let expected = head(&fixture.repository);
+    assert_eq!(head(&fixture.workspace()), expected);
+}
+
+#[test]
+fn update_rejects_workspace_metadata_for_another_remote_or_branch() {
+    let remote_mismatch = Fixture::new();
+    init_repository(&remote_mismatch.repository);
+    let repository_url = remote_mismatch.repository_url();
+    let initial = output(dof(&remote_mismatch.home).arg("clone").arg(&repository_url));
+    assert!(initial.status.success(), "{}", stderr(&initial));
+    let original_head = head(&remote_mismatch.workspace());
+    let original_config = fs::read(remote_mismatch.config()).unwrap();
+    let other_repository = remote_mismatch.root.path().join("other-repository");
+    init_repository(&other_repository);
+    let remote_name = stdout(&git(Some(&remote_mismatch.workspace()), ["remote"]))
+        .trim()
+        .to_owned();
+    git(
+        Some(&remote_mismatch.workspace()),
+        [
+            "remote",
+            "set-url",
+            &remote_name,
+            &file_url(&other_repository),
+        ],
+    );
+
+    let result = output(dof(&remote_mismatch.home).arg("clone").arg(&repository_url));
+    assert!(!result.status.success());
+    assert!(stderr(&result).contains("remote does not match"));
+    assert_eq!(head(&remote_mismatch.workspace()), original_head);
+    assert_eq!(fs::read(remote_mismatch.config()).unwrap(), original_config);
+
+    let branch_mismatch = Fixture::new();
+    init_repository(&branch_mismatch.repository);
+    let repository_url = branch_mismatch.repository_url();
+    let initial = output(dof(&branch_mismatch.home).arg("clone").arg(&repository_url));
+    assert!(initial.status.success(), "{}", stderr(&initial));
+    git(
+        Some(&branch_mismatch.workspace()),
+        ["switch", "-c", "local"],
+    );
+
+    let result = output(dof(&branch_mismatch.home).arg("clone").arg(&repository_url));
+    assert!(!result.status.success());
+    assert!(stderr(&result).contains("not checked out on configured branch"));
+    assert_eq!(current_branch(&branch_mismatch.workspace()), "local");
+}
+
+#[test]
+fn update_rejects_a_tracking_ref_that_could_overwrite_a_local_branch() {
+    let fixture = Fixture::new();
+    init_repository(&fixture.repository);
+    let repository_url = fixture.repository_url();
+    let initial = output(dof(&fixture.home).arg("clone").arg(&repository_url));
+    assert!(initial.status.success(), "{}", stderr(&initial));
+
+    git(Some(&fixture.workspace()), ["switch", "-c", "victim"]);
+    fs::write(fixture.workspace().join("victim.txt"), "preserve\n").unwrap();
+    git(Some(&fixture.workspace()), ["add", "victim.txt"]);
+    commit(&fixture.workspace(), "victim");
+    let victim_head = head(&fixture.workspace());
+    git(Some(&fixture.workspace()), ["switch", "main"]);
+    let main_head = head(&fixture.workspace());
+    let remote_name = stdout(&git(Some(&fixture.workspace()), ["remote"]))
+        .trim()
+        .to_owned();
+    git(
+        Some(&fixture.workspace()),
+        [
+            "config",
+            "--replace-all",
+            &format!("remote.{remote_name}.fetch"),
+            "+refs/heads/main:refs/heads/victim",
+        ],
+    );
+
+    fs::write(fixture.repository.join("tracked.txt"), "updated\n").unwrap();
+    git(Some(&fixture.repository), ["add", "tracked.txt"]);
+    commit(&fixture.repository, "update");
+
+    let result = output(dof(&fixture.home).arg("clone").arg(&repository_url));
+
+    assert!(!result.status.success());
+    assert!(stderr(&result).contains("unsafe remote-tracking reference"));
+    assert_eq!(head(&fixture.workspace()), main_head);
+    assert_eq!(
+        stdout(&git(
+            Some(&fixture.workspace()),
+            ["rev-parse", "refs/heads/victim"],
+        ))
+        .trim(),
+        victim_head
+    );
+}
+
+#[test]
+fn update_uses_the_validated_url_not_a_global_remote_override() {
+    let fixture = Fixture::new();
+    init_repository(&fixture.repository);
+    let repository_url = fixture.repository_url();
+    let initial = output(dof(&fixture.home).arg("clone").arg(&repository_url));
+    assert!(initial.status.success(), "{}", stderr(&initial));
+    let source_head = head(&fixture.repository);
+
+    let other_repository = fixture.root.path().join("other-repository");
+    git(
+        None,
+        ["clone", path(&fixture.repository), path(&other_repository)],
+    );
+    fs::write(other_repository.join("tracked.txt"), "wrong source\n").unwrap();
+    git(Some(&other_repository), ["add", "tracked.txt"]);
+    commit(&other_repository, "wrong source");
+    let other_url = file_url(&other_repository);
+    fs::write(
+        fixture.home.join(".gitconfig"),
+        format!("[remote \"origin\"]\n\turl = {other_url}\n"),
+    )
+    .unwrap();
+
+    let result = output(dof(&fixture.home).arg("clone").arg(&repository_url));
+
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert_eq!(head(&fixture.workspace()), source_head);
+    assert_ne!(head(&fixture.workspace()), head(&other_repository));
+    assert_eq!(
+        fs::read_to_string(fixture.workspace().join("tracked.txt")).unwrap(),
+        "main\n"
+    );
+}
+
+#[test]
+fn stable_preexisting_git_url_rewrite_can_clone_and_update() {
+    let fixture = Fixture::new();
+    init_repository(&fixture.repository);
+    let repository_url = fixture.repository_url();
+    let logical_url = "file:///dof-tests/logical-dotfiles";
+    fs::write(
+        fixture.home.join(".gitconfig"),
+        format!(
+            r#"[url "{repository_url}"]
+    insteadOf = {logical_url}
+"#,
+        ),
+    )
+    .unwrap();
+
+    let initial = output(dof(&fixture.home).arg("clone").arg(logical_url));
+    assert!(initial.status.success(), "{}", stderr(&initial));
+    let config = read_config(&fixture.config());
+    assert_eq!(config.repo.url, logical_url);
+    assert!(config.repo.endpoint_fingerprint.is_some());
+    assert!(
+        !fs::read_to_string(fixture.workspace().join(".git/config"))
+            .unwrap()
+            .contains("tagOpt")
+    );
+
+    fs::write(fixture.repository.join("tracked.txt"), "updated\n").unwrap();
+    git(Some(&fixture.repository), ["add", "tracked.txt"]);
+    commit(&fixture.repository, "update");
+
+    let update = output(dof(&fixture.home).arg("clone").arg(logical_url));
+
+    assert!(update.status.success(), "{}", stderr(&update));
+    assert_eq!(head(&fixture.workspace()), head(&fixture.repository));
+    assert_eq!(
+        fs::read_to_string(fixture.workspace().join("tracked.txt")).unwrap(),
+        "updated\n"
+    );
+}
+
+#[test]
+fn update_rejects_a_git_url_rewrite_to_another_repository() {
+    let fixture = Fixture::new();
+    init_repository(&fixture.repository);
+    let repository_url = fixture.repository_url();
+    let initial = output(dof(&fixture.home).arg("clone").arg(&repository_url));
+    assert!(initial.status.success(), "{}", stderr(&initial));
+    let original_head = head(&fixture.workspace());
+    let original_config = fs::read(fixture.config()).unwrap();
+
+    let other_repository = fixture.root.path().join("other-repository");
+    git(
+        None,
+        ["clone", path(&fixture.repository), path(&other_repository)],
+    );
+    fs::write(other_repository.join("tracked.txt"), "wrong source\n").unwrap();
+    git(Some(&other_repository), ["add", "tracked.txt"]);
+    commit(&other_repository, "wrong source");
+    let other_url = file_url(&other_repository);
+    fs::write(
+        fixture.home.join(".gitconfig"),
+        format!(
+            r#"[url "{other_url}"]
+    insteadOf = {repository_url}
+"#,
+        ),
+    )
+    .unwrap();
+
+    let result = output(dof(&fixture.home).arg("clone").arg(&repository_url));
+
+    assert!(!result.status.success());
+    assert!(stderr(&result).contains("resolves to a different endpoint"));
+    assert_eq!(head(&fixture.workspace()), original_head);
+    assert_eq!(fs::read(fixture.config()).unwrap(), original_config);
+    assert_eq!(
+        fs::read_to_string(fixture.workspace().join("tracked.txt")).unwrap(),
+        "main\n"
+    );
+}
+
+#[test]
+fn update_does_not_follow_a_fetch_head_symlink() {
+    let fixture = Fixture::new();
+    init_repository(&fixture.repository);
+    let repository_url = fixture.repository_url();
+    let initial = output(dof(&fixture.home).arg("clone").arg(&repository_url));
+    assert!(initial.status.success(), "{}", stderr(&initial));
+
+    let external = fixture.root.path().join("external.txt");
+    fs::write(&external, "preserve\n").unwrap();
+    let fetch_head = fixture.workspace().join(".git/FETCH_HEAD");
+    if fs::symlink_metadata(&fetch_head).is_ok() {
+        fs::remove_file(&fetch_head).unwrap();
+    }
+    symlink(&external, &fetch_head).unwrap();
+    fs::write(fixture.repository.join("tracked.txt"), "updated\n").unwrap();
+    git(Some(&fixture.repository), ["add", "tracked.txt"]);
+    commit(&fixture.repository, "update");
+
+    let result = output(dof(&fixture.home).arg("clone").arg(&repository_url));
+
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert_eq!(fs::read_to_string(&external).unwrap(), "preserve\n");
+    assert!(
+        fs::symlink_metadata(fetch_head)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(head(&fixture.workspace()), head(&fixture.repository));
 }
 
 #[test]
@@ -235,6 +891,27 @@ fn missing_git_upload_pack_fails_and_leaves_no_managed_state() {
 
     assert!(!result.status.success());
     assert!(stderr(&result).contains("failed to fetch repository"));
+    assert_no_managed_state(&fixture);
+}
+
+#[test]
+fn command_scoped_git_config_does_not_redirect_a_fresh_clone() {
+    let fixture = Fixture::new();
+    init_repository(&fixture.repository);
+    let logical_url = "file:///dof-tests/command-scoped-logical";
+    let result = output(
+        dof(&fixture.home)
+            .env("GIT_CONFIG_COUNT", "1")
+            .env(
+                "GIT_CONFIG_KEY_0",
+                format!("url.{}.insteadOf", fixture.repository_url()),
+            )
+            .env("GIT_CONFIG_VALUE_0", logical_url)
+            .arg("clone")
+            .arg(logical_url),
+    );
+
+    assert!(!result.status.success());
     assert_no_managed_state(&fixture);
 }
 
@@ -442,6 +1119,21 @@ fn create_branch(repository: &Path, branch: &str) {
     commit(repository, branch);
 }
 
+fn create_unreachable_tag(repository: &Path, tag: &str) -> String {
+    git(Some(repository), ["switch", "--orphan", "tag-source"]);
+    fs::write(repository.join("tag-only.txt"), "tag only\n").unwrap();
+    git(Some(repository), ["add", "--all"]);
+    commit(repository, "tag only");
+    git(Some(repository), ["tag", tag]);
+    let tagged_commit = head(repository);
+    git(Some(repository), ["switch", "main"]);
+    git(
+        Some(repository),
+        ["branch", "--delete", "--force", "tag-source"],
+    );
+    tagged_commit
+}
+
 fn commit(repository: &Path, message: &str) {
     git(
         Some(repository),
@@ -470,6 +1162,18 @@ fn git<'a>(repository: Option<&Path>, arguments: impl IntoIterator<Item = &'a st
 
 fn path(path: &Path) -> &str {
     path.to_str().unwrap()
+}
+
+fn head(repository: &Path) -> String {
+    stdout(&git(Some(repository), ["rev-parse", "HEAD"]))
+        .trim()
+        .to_owned()
+}
+
+fn revision(repository: &Path, revision: &str) -> String {
+    stdout(&git(Some(repository), ["rev-parse", revision]))
+        .trim()
+        .to_owned()
 }
 
 fn current_branch(workspace: &Path) -> String {

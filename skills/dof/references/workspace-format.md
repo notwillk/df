@@ -28,13 +28,16 @@ Feature selection is machine-local in `$HOME/.dof/config.yaml`:
 repo:
   url: https://github.com/example/dotfiles.git
   branch: main
+  endpoint_fingerprint: "sha256:..."
 features:
   default: true
   work: false
 ```
 
-An omitted `features` mapping or omitted feature key defaults to enabled. An
-explicit `false` disables that feature for apply, but lint still validates it.
+The `repo` mapping is maintained by `dof clone`; do not hand-edit its endpoint
+fingerprint. An omitted `features` mapping or omitted feature key defaults to
+enabled. An explicit `false` disables that feature for apply, but lint still
+validates it.
 Use `dof feature enable <name>` and `dof feature disable <name>` to change these
 values.
 

@@ -58,7 +58,7 @@ cargo build --workspace --locked
 cargo test --workspace --locked
 ```
 
-## Clone a dotfiles repository
+## Clone or update a dotfiles repository
 
 ```sh
 dof clone [-b|--branch <branch>] [--force] <repository>
@@ -71,11 +71,35 @@ The branch defaults to `main`. The repository is cloned to
 repo:
   url: https://github.com/example/dotfiles.git
   branch: main
+  endpoint_fingerprint: "sha256:..."
 features: {}
 ```
 
-By default, `dof clone` refuses to replace an existing workspace or config.
-Pass `--force` to delete those managed paths before cloning.
+When both managed paths are absent, `dof clone` creates a fresh checkout and
+config. When both already exist and their configured repository and branch
+match the command, `dof clone` validates the checkout, fetches that branch, and
+fast-forwards it when the remote is ahead. A checkout that is already current
+or has local commits ahead of the fetched branch is left unchanged; `dof`
+never rewinds it. Updating an existing checkout requires the system `git`
+executable.
+
+The configured URL is matched literally. On a fresh clone, dof also records a
+SHA-256 fingerprint of the effective endpoint after Git URL aliases are
+applied. HTTP(S) user information and URL passwords are removed before
+hashing. Credentials placed elsewhere in a URL, such as its path or query
+text, are not guaranteed to be excluded and should not be embedded in
+repository URLs. A stable `url.*.insteadOf` alias continues to work, while
+adding, removing, or changing an applicable alias fails before fetching from a
+different endpoint.
+
+The update fails rather than performing a destructive checkout when the local
+and fetched histories have diverged or local files prevent the fast-forward.
+It also fails when the requested repository or branch differs from the config,
+when only one managed path exists, or when the existing state is malformed.
+
+Pass `--force` to delete the existing workspace and config regardless of their
+contents and create a fresh installation. This is destructive: the previous
+state is not backed up or restored if the new clone fails.
 
 ## List enabled features
 

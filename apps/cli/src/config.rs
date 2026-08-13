@@ -42,15 +42,18 @@ impl Config {
 pub(crate) struct RepoConfig {
     pub(crate) url: String,
     pub(crate) branch: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) endpoint_fingerprint: Option<String>,
     #[serde(flatten)]
     extensions: BTreeMap<String, Value>,
 }
 
 impl RepoConfig {
-    pub(crate) fn new(url: String, branch: String) -> Self {
+    pub(crate) fn new(url: String, branch: String, endpoint_fingerprint: String) -> Self {
         Self {
             url,
             branch,
+            endpoint_fingerprint: Some(endpoint_fingerprint),
             extensions: BTreeMap::new(),
         }
     }

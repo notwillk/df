@@ -407,6 +407,7 @@ name = "dof"
 version = "0.1.5"
 dependencies = [
  "anyhow",
+ "aws-lc-rs",
  "clap",
  "gix",
  "jiff",

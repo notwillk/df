@@ -25,8 +25,11 @@ workspace with the user's home directory.
 5. Treat the workspace as trusted code. Feature `apply` hooks and programs
    invoked by `dof run` execute with the user's environment and privileges.
 
-Never use `dof clone --force` unless the user explicitly intends to destroy and
-replace the existing managed workspace and config.
+Treat a normal `dof clone` as a mutation when managed state already exists: a
+matching checkout may be fast-forwarded. Run it only when the user authorizes
+initializing or updating that repository. Never use `dof clone --force` unless
+the user explicitly intends to destroy and replace the existing managed
+workspace and config.
 
 ## Inspect and validate
 
@@ -47,18 +50,32 @@ disabled feature can contain an invalid schema or ownership conflict. Before
 an apply, also review the enabled features' imperative hooks; lint validates
 their shape and permissions, not whether their behavior is safe.
 
-## Initialize a workspace
+## Initialize or update a workspace
 
-Clone a repository only when the user asks to initialize or replace their dof
-state:
+Clone or update a repository only when the user asks to initialize or update
+their dof state:
 
 ```sh
 dof clone [--branch <branch>] <repository>
 ```
 
-The branch defaults to `main`. A normal clone refuses existing managed state.
-Before considering `--force`, explain that it deletes the existing workspace
-and config without restoring them if the new clone fails.
+The branch defaults to `main`. With no workspace or config, this creates a
+fresh installation. With both present, the configured repository and branch
+must match the command. `dof` then validates the checkout, fetches with the
+system Git executable, and fast-forwards only when the fetched branch is ahead.
+An already-current or locally-ahead checkout is a successful no-op and is never
+rewound. Stable Git `url.*.insteadOf` aliases are supported; dof binds the
+effective endpoint during a fresh clone and rejects later changes to that
+resolution.
+
+Expect a normal update to fail on divergent history, destructive checkout
+conflicts, a different repository or branch, partial state, malformed state,
+or a configured URL that now resolves to a different endpoint. Diagnose those
+conditions instead of escalating automatically to
+`--force`. If the intended repository or branch is unclear, inspect
+`$HOME/.dof/config.yaml` read-only and confirm the desired source before
+running the command. Before considering `--force`, explain that it deletes the
+existing workspace and config without restoring them if the new clone fails.
 
 ## Author workspace features
 
