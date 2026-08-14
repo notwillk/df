@@ -199,11 +199,8 @@ fn omitted_features_do_not_contribute_to_shared_snippet_targets() {
 #[test]
 fn feature_commands_drive_list_and_apply_selection_end_to_end() {
     let fixture = Fixture::new();
-    fs::write(
-        fixture.feature_home("default").join("default.txt"),
-        "default\n",
-    )
-    .unwrap();
+    let default_source = fixture.feature_home("default").join("default.txt");
+    fs::write(&default_source, "default\n").unwrap();
     fixture.write_apply_script(
         "default",
         "#!/bin/sh\nprintf 'default\\n' >> \"$HOME/script-runs\"\n",
@@ -219,12 +216,47 @@ fn feature_commands_drive_list_and_apply_selection_end_to_end() {
     assert!(initial.status.success(), "{}", stderr(&initial));
     assert_eq!(stdout(&initial), "[\"default\"]\n");
 
+    let default_only = output(dof(&fixture.home).arg("apply"));
+    assert!(default_only.status.success(), "{}", stderr(&default_only));
+    assert_summary(&default_only, 1, 0);
+    assert_eq!(
+        fs::read_to_string(fixture.home.join("default.txt")).unwrap(),
+        "default\n"
+    );
+    assert!(!fixture.home.join("hostname.txt").exists());
+    assert_eq!(
+        fs::read_to_string(fixture.home.join("script-runs")).unwrap(),
+        "default\n"
+    );
+
     let enable = output(dof(&fixture.home).args(["feature", "enable", "hostname"]));
     assert!(enable.status.success(), "{}", stderr(&enable));
     let both = output(dof(&fixture.home).args(["features", "--json"]));
     assert!(both.status.success(), "{}", stderr(&both));
     assert_eq!(stdout(&both), "[\"default\",\"hostname\"]\n");
 
+    let default_and_opt_in = output(dof(&fixture.home).arg("apply"));
+    assert!(
+        default_and_opt_in.status.success(),
+        "{}",
+        stderr(&default_and_opt_in)
+    );
+    assert_summary(&default_and_opt_in, 1, 1);
+    assert_eq!(
+        fs::read_to_string(fixture.home.join("default.txt")).unwrap(),
+        "default\n"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.home.join("hostname.txt")).unwrap(),
+        "first\n"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.home.join("script-runs")).unwrap(),
+        "default\ndefault\nhostname\n"
+    );
+
+    fs::write(&default_source, "default changed while disabled\n").unwrap();
+    fs::write(&source, "second\n").unwrap();
     let disable_default = output(dof(&fixture.home).args(["feature", "disable", "default"]));
     assert!(
         disable_default.status.success(),
@@ -235,20 +267,23 @@ fn feature_commands_drive_list_and_apply_selection_end_to_end() {
     assert!(hostname_only.status.success(), "{}", stderr(&hostname_only));
     assert_eq!(stdout(&hostname_only), "[\"hostname\"]\n");
 
-    let applied = output(dof(&fixture.home).arg("apply"));
-    assert!(applied.status.success(), "{}", stderr(&applied));
-    assert_summary(&applied, 1, 0);
-    assert!(!fixture.home.join("default.txt").exists());
+    let opt_in_only = output(dof(&fixture.home).arg("apply"));
+    assert!(opt_in_only.status.success(), "{}", stderr(&opt_in_only));
+    assert_summary(&opt_in_only, 1, 0);
+    assert_eq!(
+        fs::read_to_string(fixture.home.join("default.txt")).unwrap(),
+        "default\n"
+    );
     assert_eq!(
         fs::read_to_string(fixture.home.join("hostname.txt")).unwrap(),
-        "first\n"
+        "second\n"
     );
     assert_eq!(
         fs::read_to_string(fixture.home.join("script-runs")).unwrap(),
-        "hostname\n"
+        "default\ndefault\nhostname\nhostname\n"
     );
 
-    fs::write(&source, "second\n").unwrap();
+    fs::write(&source, "third while disabled\n").unwrap();
     let disable = output(dof(&fixture.home).args(["feature", "disable", "hostname"]));
     assert!(disable.status.success(), "{}", stderr(&disable));
     let none = output(dof(&fixture.home).args(["features", "--json"]));
@@ -259,12 +294,16 @@ fn feature_commands_drive_list_and_apply_selection_end_to_end() {
     assert!(disabled.status.success(), "{}", stderr(&disabled));
     assert_summary(&disabled, 0, 0);
     assert_eq!(
+        fs::read_to_string(fixture.home.join("default.txt")).unwrap(),
+        "default\n"
+    );
+    assert_eq!(
         fs::read_to_string(fixture.home.join("hostname.txt")).unwrap(),
-        "first\n"
+        "second\n"
     );
     assert_eq!(
         fs::read_to_string(fixture.home.join("script-runs")).unwrap(),
-        "hostname\n"
+        "default\ndefault\nhostname\nhostname\n"
     );
 }
 
@@ -373,6 +412,31 @@ features:
         "old\n"
     );
     assert!(!fixture.home.join("collision").exists());
+    assert!(backup_snapshots(&fixture).is_empty());
+}
+
+#[test]
+fn omitted_invalid_feature_is_validated_before_default_mutates_home() {
+    let fixture = Fixture::new();
+    fs::write(fixture.feature_home("default").join("sentinel"), "new\n").unwrap();
+    fs::write(fixture.home.join("sentinel"), "old\n").unwrap();
+    fixture.write_snippets(
+        "z-omitted-invalid",
+        "snippets:\n  .profile: this-must-be-an-array\n",
+    );
+
+    let enabled = output(dof(&fixture.home).args(["features", "--json"]));
+    assert!(enabled.status.success(), "{}", stderr(&enabled));
+    assert_eq!(stdout(&enabled), "[\"default\"]\n");
+
+    let result = output(dof(&fixture.home).arg("apply"));
+
+    assert!(!result.status.success());
+    assert!(stderr(&result).contains("z-omitted-invalid"));
+    assert_eq!(
+        fs::read_to_string(fixture.home.join("sentinel")).unwrap(),
+        "old\n"
+    );
     assert!(backup_snapshots(&fixture).is_empty());
 }
 
@@ -491,7 +555,7 @@ fn feature_script_runs_with_a_relative_home() {
 }
 
 #[test]
-fn failing_feature_script_stops_later_scripts_after_file_sync() {
+fn failing_feature_script_preserves_backups_and_stops_later_scripts_after_file_sync() {
     let fixture = Fixture::new();
     fixture.write_config(
         r#"repo:
@@ -503,7 +567,9 @@ features:
 "#,
     );
     let zeta = fixture.feature_home("zeta");
+    let destination = fixture.home.join("managed-before-scripts.txt");
     fs::write(zeta.join("managed-before-scripts.txt"), "managed\n").unwrap();
+    fs::write(&destination, "original\n").unwrap();
     fixture.write_apply_script(
         "alpha",
         "#!/bin/sh\nprintf 'alpha\\n' >> \"$HOME/script-runs\"\nexit 23\n",
@@ -517,13 +583,20 @@ features:
 
     assert!(!result.status.success());
     assert!(stderr(&result).contains("alpha"), "{}", stderr(&result));
-    assert_eq!(
-        fs::read_to_string(fixture.home.join("managed-before-scripts.txt")).unwrap(),
-        "managed\n"
-    );
+    assert_eq!(fs::read_to_string(&destination).unwrap(), "managed\n");
     assert_eq!(
         fs::read_to_string(fixture.home.join("script-runs")).unwrap(),
         "alpha\n"
+    );
+    let snapshots = backup_snapshots(&fixture);
+    assert_eq!(
+        snapshots.len(),
+        1,
+        "failed applies must retain their backup"
+    );
+    assert_eq!(
+        fs::read_to_string(snapshots[0].join("managed-before-scripts.txt")).unwrap(),
+        "original\n"
     );
 }
 
@@ -1069,6 +1142,14 @@ fn prepare_preflight_sentinel(fixture: &Fixture) {
     let source = fixture.feature_home("a-safe");
     fs::write(source.join("sentinel"), "new\n").unwrap();
     fs::write(fixture.home.join("sentinel"), "old\n").unwrap();
+
+    let enabled = output(dof(&fixture.home).args(["features", "--json"]));
+    assert!(enabled.status.success(), "{}", stderr(&enabled));
+    let enabled_features: Vec<String> = serde_json::from_str(&stdout(&enabled)).unwrap();
+    assert!(
+        enabled_features.iter().any(|feature| feature == "a-safe"),
+        "preflight sentinel owner must be enabled; got {enabled_features:?}"
+    );
 }
 
 fn config_with_disabled_bad_feature() -> &'static str {
@@ -1097,13 +1178,23 @@ fn assert_preflight_left_home_unchanged(fixture: &Fixture) {
 
 fn assert_summary(result: &Output, applied: usize, unchanged: usize) {
     let output = stdout(result);
-    assert!(
-        output.contains(&format!("applied: {applied}")),
-        "missing applied count in stdout: {output:?}"
+    let mut lines = output.lines();
+    let expected_applied = format!("applied: {applied}");
+    let expected_unchanged = format!("unchanged: {unchanged}");
+    assert_eq!(lines.next(), Some(expected_applied.as_str()), "{output:?}");
+    assert_eq!(
+        lines.next(),
+        Some(expected_unchanged.as_str()),
+        "{output:?}"
     );
+    let remaining = lines.collect::<Vec<_>>();
     assert!(
-        output.contains(&format!("unchanged: {unchanged}")),
-        "missing unchanged count in stdout: {output:?}"
+        remaining.is_empty()
+            || (remaining.len() == 1
+                && remaining[0]
+                    .strip_prefix("backup: ")
+                    .is_some_and(|path| !path.is_empty())),
+        "unexpected apply summary fields: {output:?}"
     );
 }
 

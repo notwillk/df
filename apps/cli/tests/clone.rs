@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -90,6 +90,133 @@ fn clones_main_and_writes_default_config() {
             .all(|byte| byte.is_ascii_hexdigit())
     );
     assert_eq!(config.features, BTreeMap::new());
+}
+
+#[test]
+fn cloned_empty_feature_map_applies_only_default_without_touching_omitted_resources() {
+    let fixture = Fixture::new();
+    init_repository(&fixture.repository);
+
+    let default = fixture.repository.join("features/default");
+    fs::create_dir_all(default.join("home")).unwrap();
+    fs::write(default.join("home/default-managed"), "default\n").unwrap();
+    let default_script = default.join("apply");
+    fs::write(
+        &default_script,
+        "#!/bin/sh\nprintf 'default hook\n' > \"$HOME/default-hook-ran\"\n",
+    )
+    .unwrap();
+    set_mode(&default_script, 0o700);
+
+    let hostname = fixture.repository.join("features/hostname");
+    fs::create_dir_all(hostname.join("home")).unwrap();
+    fs::write(
+        hostname.join("home/dangerous-file"),
+        "hostname changed this\n",
+    )
+    .unwrap();
+    let hostname_script = hostname.join("apply");
+    fs::write(
+        &hostname_script,
+        "#!/bin/sh\nprintf 'hostname hook\n' > \"$HOME/optional-hook-ran\"\n",
+    )
+    .unwrap();
+    set_mode(&hostname_script, 0o700);
+
+    let macos_gui = fixture.repository.join("features/macos-gui");
+    fs::create_dir_all(macos_gui.join("home/dangerous-directory")).unwrap();
+    fs::write(
+        macos_gui.join("home/dangerous-directory/installed-by-optional"),
+        "dangerous\n",
+    )
+    .unwrap();
+    fs::write(
+        macos_gui.join("snippets.yaml"),
+        "snippets:\n  .profile:\n    - 'macOS mutation'\n",
+    )
+    .unwrap();
+    let macos_script = macos_gui.join("apply");
+    fs::write(
+        &macos_script,
+        "#!/bin/sh\nprintf 'macOS hook\n' >> \"$HOME/optional-hook-ran\"\n",
+    )
+    .unwrap();
+    set_mode(&macos_script, 0o700);
+    git(Some(&fixture.repository), ["add", "."]);
+    commit(&fixture.repository, "add feature safety fixture");
+
+    let cloned = output(
+        dof(&fixture.home)
+            .arg("clone")
+            .arg(fixture.repository_url()),
+    );
+    assert!(cloned.status.success(), "{}", stderr(&cloned));
+
+    let enabled = output(dof(&fixture.home).args(["features", "--json"]));
+    assert!(enabled.status.success(), "{}", stderr(&enabled));
+    assert_eq!(stdout(&enabled), "[\"default\"]\n");
+
+    let dangerous_file = fixture.home.join("dangerous-file");
+    fs::write(&dangerous_file, "preserve file\n").unwrap();
+    set_mode(&dangerous_file, 0o640);
+    let file_before = fs::metadata(&dangerous_file).unwrap();
+
+    let profile = fixture.home.join(".profile");
+    fs::write(&profile, "preserve profile\n").unwrap();
+    set_mode(&profile, 0o600);
+    let profile_before = fs::metadata(&profile).unwrap();
+
+    let dangerous_directory = fixture.home.join("dangerous-directory");
+    fs::create_dir(&dangerous_directory).unwrap();
+    set_mode(&dangerous_directory, 0o710);
+    fs::write(dangerous_directory.join("existing"), "preserve directory\n").unwrap();
+    let directory_before = fs::metadata(&dangerous_directory).unwrap();
+
+    let applied = output(dof(&fixture.home).arg("apply"));
+
+    assert!(applied.status.success(), "{}", stderr(&applied));
+    assert_eq!(stdout(&applied), "applied: 1\nunchanged: 0\n");
+    assert_eq!(
+        fs::read_to_string(fixture.home.join("default-managed")).unwrap(),
+        "default\n"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.home.join("default-hook-ran")).unwrap(),
+        "default hook\n"
+    );
+    assert!(!fixture.home.join("optional-hook-ran").exists());
+
+    assert_eq!(
+        fs::read_to_string(&dangerous_file).unwrap(),
+        "preserve file\n"
+    );
+    let file_after = fs::metadata(&dangerous_file).unwrap();
+    assert_eq!(file_after.ino(), file_before.ino());
+    assert_eq!(
+        file_after.permissions().mode(),
+        file_before.permissions().mode()
+    );
+
+    assert_eq!(fs::read_to_string(&profile).unwrap(), "preserve profile\n");
+    let profile_after = fs::metadata(&profile).unwrap();
+    assert_eq!(profile_after.ino(), profile_before.ino());
+    assert_eq!(
+        profile_after.permissions().mode(),
+        profile_before.permissions().mode()
+    );
+
+    assert_eq!(
+        fs::read_to_string(dangerous_directory.join("existing")).unwrap(),
+        "preserve directory\n"
+    );
+    assert!(!dangerous_directory.join("installed-by-optional").exists());
+    let directory_after = fs::metadata(&dangerous_directory).unwrap();
+    assert_eq!(directory_after.ino(), directory_before.ino());
+    assert_eq!(
+        directory_after.permissions().mode(),
+        directory_before.permissions().mode()
+    );
+    assert!(fs::symlink_metadata(fixture.home.join(".dof/backups")).is_err());
 }
 
 #[test]
@@ -193,6 +320,126 @@ fn same_repository_fast_forwards_without_recloning_or_rewriting_config() {
         "preserve\n"
     );
     assert_eq!(fs::read_to_string(fixture.config()).unwrap(), config);
+}
+
+#[test]
+fn update_does_not_execute_a_workspace_post_merge_hook() {
+    let fixture = Fixture::new();
+    init_repository(&fixture.repository);
+    let repository_url = fixture.repository_url();
+    let initial = output(dof(&fixture.home).arg("clone").arg(&repository_url));
+    assert!(initial.status.success(), "{}", stderr(&initial));
+
+    let hook = fixture.workspace().join(".git/hooks/post-merge");
+    fs::write(
+        &hook,
+        "#!/bin/sh\nprintf 'executed\\n' > \"$HOME/post-merge-executed\"\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&hook).unwrap().permissions();
+    permissions.set_mode(0o700);
+    fs::set_permissions(&hook, permissions).unwrap();
+    assert_ne!(fs::metadata(&hook).unwrap().permissions().mode() & 0o111, 0);
+
+    fs::write(fixture.repository.join("tracked.txt"), "updated\n").unwrap();
+    git(Some(&fixture.repository), ["add", "tracked.txt"]);
+    commit(&fixture.repository, "update");
+
+    let result = output(dof(&fixture.home).arg("clone").arg(&repository_url));
+
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert_eq!(head(&fixture.workspace()), head(&fixture.repository));
+    assert!(
+        !fixture.home.join("post-merge-executed").exists(),
+        "workspace post-merge hook executed during update"
+    );
+}
+
+#[test]
+fn update_does_not_fetch_or_checkout_a_submodule_recursively() {
+    let fixture = Fixture::new();
+    init_repository(&fixture.repository);
+    let submodule_repository = fixture.root.path().join("submodule-repository");
+    init_repository(&submodule_repository);
+    let submodule_url = file_url(&submodule_repository);
+    git(
+        Some(&fixture.repository),
+        [
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "--",
+            &submodule_url,
+            "vendor/dependency",
+        ],
+    );
+    commit(&fixture.repository, "add submodule");
+    let original_submodule_head = head(&submodule_repository);
+    let repository_url = fixture.repository_url();
+
+    let initial = output(dof(&fixture.home).arg("clone").arg(&repository_url));
+    assert!(initial.status.success(), "{}", stderr(&initial));
+    git(
+        Some(&fixture.workspace()),
+        [
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "update",
+            "--init",
+            "--recursive",
+            "--",
+            "vendor/dependency",
+        ],
+    );
+    let workspace_submodule = fixture.workspace().join("vendor/dependency");
+    assert_eq!(head(&workspace_submodule), original_submodule_head);
+    git(
+        Some(&fixture.workspace()),
+        ["config", "submodule.recurse", "true"],
+    );
+    git(
+        Some(&fixture.workspace()),
+        ["config", "fetch.recurseSubmodules", "true"],
+    );
+
+    fs::write(submodule_repository.join("tracked.txt"), "updated\n").unwrap();
+    git(Some(&submodule_repository), ["add", "tracked.txt"]);
+    commit(&submodule_repository, "update submodule");
+    let updated_submodule_head = head(&submodule_repository);
+    assert_ne!(updated_submodule_head, original_submodule_head);
+
+    let repository_submodule = fixture.repository.join("vendor/dependency");
+    git(Some(&repository_submodule), ["fetch", "origin"]);
+    git(
+        Some(&repository_submodule),
+        ["checkout", "--detach", &updated_submodule_head],
+    );
+    git(Some(&fixture.repository), ["add", "vendor/dependency"]);
+    commit(&fixture.repository, "advance submodule");
+
+    assert!(!git_object_exists(
+        &workspace_submodule,
+        &updated_submodule_head
+    ));
+    let result = output(dof(&fixture.home).arg("clone").arg(&repository_url));
+
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert_eq!(head(&fixture.workspace()), head(&fixture.repository));
+    assert_eq!(
+        revision(&fixture.workspace(), "HEAD:vendor/dependency"),
+        updated_submodule_head
+    );
+    assert_eq!(head(&workspace_submodule), original_submodule_head);
+    assert_eq!(
+        fs::read_to_string(workspace_submodule.join("tracked.txt")).unwrap(),
+        "main\n"
+    );
+    assert!(
+        !git_object_exists(&workspace_submodule, &updated_submodule_head),
+        "parent update recursively fetched the new submodule commit"
+    );
 }
 
 #[test]
@@ -1176,6 +1423,16 @@ fn revision(repository: &Path, revision: &str) -> String {
         .to_owned()
 }
 
+fn git_object_exists(repository: &Path, object: &str) -> bool {
+    output(Command::new("git").arg("-C").arg(repository).args([
+        "cat-file",
+        "-e",
+        &format!("{object}^{{commit}}"),
+    ]))
+    .status
+    .success()
+}
+
 fn current_branch(workspace: &Path) -> String {
     let head = fs::read_to_string(workspace.join(".git/HEAD")).unwrap();
     head.strip_prefix("ref: refs/heads/")
@@ -1201,6 +1458,12 @@ fn file_url(path: &Path) -> String {
 fn git_upload_pack() -> PathBuf {
     let result = git(None, ["--exec-path"]);
     PathBuf::from(stdout(&result).trim()).join("git-upload-pack")
+}
+
+fn set_mode(path: &Path, mode: u32) {
+    let mut permissions = fs::metadata(path).unwrap().permissions();
+    permissions.set_mode(mode);
+    fs::set_permissions(path, permissions).unwrap();
 }
 
 fn write_fake_upload_pack(directory: &Path, script: &str) {

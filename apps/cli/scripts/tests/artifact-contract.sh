@@ -8,6 +8,7 @@ cross_compile="$project_root/scripts/cross-compile.sh"
 linux_verify="$project_root/scripts/verify-static-linux-binary.sh"
 macos_verify="$project_root/scripts/verify-macos-binary.sh"
 test_root="$(mktemp -d "${TMPDIR:-/tmp}/dof-artifact-contract.XXXXXX")"
+test_root="$(CDPATH= cd -- "$test_root" && pwd -P)"
 
 cleanup() {
   local status=$?

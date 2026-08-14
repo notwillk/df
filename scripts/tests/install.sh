@@ -46,6 +46,36 @@ assert_not_contains() {
   fi
 }
 
+assert_same_contents() {
+  expected=$1
+  actual=$2
+  description=$3
+
+  if [ -f "$actual" ] && [ ! -L "$actual" ] && cmp -s "$expected" "$actual"; then
+    pass "$description"
+  else
+    fail "$description"
+  fi
+}
+
+file_mode() {
+  if stat -c '%a' "$1" 2>/dev/null; then
+    return
+  fi
+  stat -f '%Lp' "$1"
+}
+
+assert_regular_0755() {
+  path=$1
+  description=$2
+
+  if [ -f "$path" ] && [ ! -L "$path" ] && [ "$(file_mode "$path")" = 755 ]; then
+    pass "$description"
+  else
+    fail "$description"
+  fi
+}
+
 make_mock() {
   path=$1
   shift
@@ -69,7 +99,7 @@ link_host_command() {
 BASE_BIN=$TEST_ROOT/base-bin
 mkdir "$BASE_BIN"
 for command_name in \
-  awk basename cat cp cut grep gzip head mkdir mktemp rm sed sh tar tr wc
+  awk basename cat cp cut grep gzip head install mkdir mktemp rm sed sh tar tr wc
 do
   link_host_command "$command_name"
 done
@@ -334,6 +364,70 @@ expect_success "DEST override succeeds" \
   MOCK_OS=Linux MOCK_ARCH=x86_64 DOF_VERSION=v1.0.0 DEST="$custom_dest"
 assert_contains "$LOG" "$custom_dest/dof" \
   "DEST override controls the installed path"
+
+setup_case real_install_fresh
+rm "$MOCK_BIN/install"
+fresh_dest=$CASE_ROOT/fresh/bin
+expect_success "the platform install utility performs a fresh installation" \
+  MOCK_OS=Linux MOCK_ARCH=x86_64 DOF_VERSION=v1.0.0 DEST="$fresh_dest"
+assert_same_contents "$CASE_ROOT/archive/dof" "$fresh_dest/dof" \
+  "a fresh installation preserves the release binary bytes exactly"
+assert_regular_0755 "$fresh_dest/dof" \
+  "a fresh installation creates a regular 0755 binary"
+
+setup_case real_install_regular_replacement
+rm "$MOCK_BIN/install"
+printf '%s\n' '#!/bin/sh' 'printf "old binary\\n"' >"$CASE_ROOT/dest/dof"
+chmod 0600 "$CASE_ROOT/dest/dof"
+expect_success "the platform install utility replaces a regular file" \
+  MOCK_OS=Linux MOCK_ARCH=x86_64 DOF_VERSION=v1.0.0 DEST="$CASE_ROOT/dest"
+assert_same_contents "$CASE_ROOT/archive/dof" "$CASE_ROOT/dest/dof" \
+  "regular-file replacement installs the release bytes exactly"
+assert_regular_0755 "$CASE_ROOT/dest/dof" \
+  "regular-file replacement creates a regular 0755 binary"
+
+setup_case real_install_leaf_symlink_replacement
+rm "$MOCK_BIN/install"
+referent=$CASE_ROOT/symlink-referent
+referent_before=$CASE_ROOT/symlink-referent.before
+printf '%s\n' 'referent must remain untouched' >"$referent"
+chmod 0640 "$referent"
+cp "$referent" "$referent_before"
+referent_inode_before=$(ls -di "$referent" | awk '{ print $1 }')
+ln -s "$referent" "$CASE_ROOT/dest/dof"
+expect_success "the platform install utility replaces a leaf symlink" \
+  MOCK_OS=Linux MOCK_ARCH=x86_64 DOF_VERSION=v1.0.0 DEST="$CASE_ROOT/dest"
+assert_same_contents "$CASE_ROOT/archive/dof" "$CASE_ROOT/dest/dof" \
+  "leaf-symlink replacement installs the release bytes at the link path"
+assert_regular_0755 "$CASE_ROOT/dest/dof" \
+  "leaf-symlink replacement leaves a regular 0755 binary"
+assert_same_contents "$referent_before" "$referent" \
+  "leaf-symlink replacement does not modify its former referent"
+if [ "$(file_mode "$referent")" = 640 ] && \
+  [ "$(ls -di "$referent" | awk '{ print $1 }')" = "$referent_inode_before" ]; then
+  pass "leaf-symlink replacement preserves its former referent identity and mode"
+else
+  fail "leaf-symlink replacement preserves its former referent identity and mode"
+fi
+
+setup_case validation_failure_preserves_existing_binary
+rm "$MOCK_BIN/install"
+existing_before=$CASE_ROOT/existing.before
+printf '%s\n' '#!/bin/sh' 'printf "existing binary\\n"' >"$CASE_ROOT/dest/dof"
+chmod 0711 "$CASE_ROOT/dest/dof"
+cp "$CASE_ROOT/dest/dof" "$existing_before"
+existing_inode_before=$(ls -di "$CASE_ROOT/dest/dof" | awk '{ print $1 }')
+expect_failure "validation failure happens before the platform install utility" \
+  MOCK_OS=Linux MOCK_ARCH=x86_64 DOF_VERSION=v1.0.0 DEST="$CASE_ROOT/dest" \
+  MOCK_ACTUAL_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+assert_same_contents "$existing_before" "$CASE_ROOT/dest/dof" \
+  "validation failure preserves the existing binary bytes"
+if [ "$(file_mode "$CASE_ROOT/dest/dof")" = 711 ] && \
+  [ "$(ls -di "$CASE_ROOT/dest/dof" | awk '{ print $1 }')" = "$existing_inode_before" ]; then
+  pass "validation failure preserves the existing binary identity and mode"
+else
+  fail "validation failure preserves the existing binary identity and mode"
+fi
 
 setup_case default_destination
 expect_success "default destination succeeds" \
