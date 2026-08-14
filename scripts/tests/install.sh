@@ -83,6 +83,20 @@ setup_case() {
   NO_VERIFIER_BIN=$CASE_ROOT/no-verifier-bin
   FIXTURES=$CASE_ROOT/fixtures
   LOG=$CASE_ROOT/commands.log
+  MOCK_OS=Linux
+  MOCK_ARCH=x86_64
+  MOCK_LATEST_TAG=v1.2.3
+  MOCK_MISSING_CHECKSUM=0
+  MOCK_MANIFEST_SHA=
+  MOCK_ACTUAL_SHA=
+  MOCK_KEY_DOWNLOAD_FAIL=0
+  MOCK_SIGNATURE_DOWNLOAD_FAIL=0
+  MOCK_GPG_IMPORT_FAIL=0
+  MOCK_GPG_VERIFY_FAIL=0
+  MOCK_SQ_STYLE=modern
+  MOCK_SQ_VERIFY_FAIL=0
+  DOF_VERSION=
+  DEST=
   mkdir -p \
     "$MOCK_BIN" \
     "$GPG_BIN" \
@@ -195,11 +209,7 @@ printf "sudo %s\n" "$*" >>"$MOCK_LOG"
 "$@"'
 }
 
-run_installer() {
-  stdout=$1
-  stderr=$2
-  shift 2
-
+run_installer_environment() {
   env \
     PATH="$VERIFIER_PATH:$MOCK_BIN:$BASE_BIN" \
     TMPDIR="$CASE_ROOT/tmp" \
@@ -220,6 +230,15 @@ run_installer() {
     MOCK_SQ_VERIFY_FAIL="${MOCK_SQ_VERIFY_FAIL:-0}" \
     DOF_VERSION="${DOF_VERSION:-}" \
     DEST="${DEST:-}" \
+    "$@"
+}
+
+run_installer() {
+  stdout=$1
+  stderr=$2
+  shift 2
+
+  run_installer_environment \
     "$@" \
     /bin/sh "$INSTALLER" >"$stdout" 2>"$stderr"
 }
@@ -229,26 +248,7 @@ run_installer_with_args() {
   stderr=$2
   shift 2
 
-  env \
-    PATH="$VERIFIER_PATH:$MOCK_BIN:$BASE_BIN" \
-    TMPDIR="$CASE_ROOT/tmp" \
-    MOCK_LOG="$LOG" \
-    MOCK_FIXTURES="$FIXTURES" \
-    MOCK_ARCHIVE_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-    MOCK_OS="${MOCK_OS:-Linux}" \
-    MOCK_ARCH="${MOCK_ARCH:-x86_64}" \
-    MOCK_LATEST_TAG="${MOCK_LATEST_TAG:-v1.2.3}" \
-    MOCK_MISSING_CHECKSUM="${MOCK_MISSING_CHECKSUM:-0}" \
-    MOCK_MANIFEST_SHA="${MOCK_MANIFEST_SHA:-}" \
-    MOCK_ACTUAL_SHA="${MOCK_ACTUAL_SHA:-}" \
-    MOCK_KEY_DOWNLOAD_FAIL="${MOCK_KEY_DOWNLOAD_FAIL:-0}" \
-    MOCK_SIGNATURE_DOWNLOAD_FAIL="${MOCK_SIGNATURE_DOWNLOAD_FAIL:-0}" \
-    MOCK_GPG_IMPORT_FAIL="${MOCK_GPG_IMPORT_FAIL:-0}" \
-    MOCK_GPG_VERIFY_FAIL="${MOCK_GPG_VERIFY_FAIL:-0}" \
-    MOCK_SQ_STYLE="${MOCK_SQ_STYLE:-modern}" \
-    MOCK_SQ_VERIFY_FAIL="${MOCK_SQ_VERIFY_FAIL:-0}" \
-    DOF_VERSION="${DOF_VERSION:-}" \
-    DEST="${DEST:-}" \
+  run_installer_environment \
     /bin/sh "$INSTALLER" "$@" >"$stdout" 2>"$stderr"
 }
 
