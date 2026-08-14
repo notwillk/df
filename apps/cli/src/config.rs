@@ -30,7 +30,10 @@ impl Config {
     }
 
     pub(crate) fn feature_enabled(&self, name: &str) -> bool {
-        self.features.get(name).copied().unwrap_or(true)
+        self.features
+            .get(name)
+            .copied()
+            .unwrap_or(name == "default")
     }
 
     pub(crate) fn set_feature_enabled(&mut self, name: &str, enabled: bool) {
@@ -282,5 +285,75 @@ fn cleanup_created_config(
         Err(cleanup_error) => {
             anyhow!("{error:#}; failed to clean up partial config: {cleanup_error:#}")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Config, RepoConfig};
+
+    fn config() -> Config {
+        Config::new(RepoConfig::new(
+            "file:///dotfiles".to_owned(),
+            "main".to_owned(),
+            "sha256:test".to_owned(),
+        ))
+    }
+
+    #[test]
+    fn only_default_is_enabled_without_an_explicit_setting() {
+        let config = config();
+
+        assert!(config.feature_enabled("default"));
+        assert!(!config.feature_enabled("macos"));
+        assert!(!config.feature_enabled("linux"));
+    }
+
+    #[test]
+    fn explicit_feature_settings_override_defaults() {
+        let mut config = config();
+        config.set_feature_enabled("default", false);
+        config.set_feature_enabled("macos", true);
+
+        assert!(!config.feature_enabled("default"));
+        assert!(config.feature_enabled("macos"));
+        assert!(!config.feature_enabled("linux"));
+    }
+
+    #[test]
+    fn omitted_and_empty_deserialized_feature_maps_enable_only_exact_default() {
+        for yaml in [
+            "repo:\n  url: file:///dotfiles\n  branch: main\n",
+            "repo:\n  url: file:///dotfiles\n  branch: main\nfeatures: {}\n",
+        ] {
+            let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+
+            assert!(config.feature_enabled("default"));
+            for name in [
+                "Default",
+                "DEFAULT",
+                "default-extra",
+                "hostname",
+                "macos-gui",
+            ] {
+                assert!(
+                    !config.feature_enabled(name),
+                    "{name:?} must require opt-in"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn deserialized_explicit_values_override_both_implicit_states() {
+        let config: Config = serde_yaml_ng::from_str(
+            "repo:\n  url: file:///dotfiles\n  branch: main\nfeatures:\n  default: false\n  macos-gui: true\n  hostname: false\n",
+        )
+        .unwrap();
+
+        assert!(!config.feature_enabled("default"));
+        assert!(config.feature_enabled("macos-gui"));
+        assert!(!config.feature_enabled("hostname"));
+        assert!(!config.feature_enabled("unmentioned"));
     }
 }

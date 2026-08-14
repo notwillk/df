@@ -24,7 +24,7 @@ fn features_help_describes_json_and_rejects_arguments() {
 }
 
 #[test]
-fn omitted_feature_settings_enable_sorted_feature_directories_only() {
+fn omitted_feature_settings_enable_only_default() {
     let fixture = Fixture::new();
     fixture.write_config(
         r#"repo:
@@ -53,7 +53,27 @@ fn omitted_feature_settings_enable_sorted_feature_directories_only() {
     let result = output(dof(&fixture.home).arg("features"));
 
     assert!(result.status.success(), "{}", stderr(&result));
-    assert_eq!(stdout(&result), "alpha\ndefault\nzeta\n");
+    assert_eq!(stdout(&result), "default\n");
+}
+
+#[test]
+fn empty_feature_map_lists_only_default_in_json() {
+    let fixture = Fixture::new();
+    fixture.write_config(
+        r#"repo:
+  url: file:///dotfiles
+  branch: main
+features: {}
+"#,
+    );
+    for feature in ["default", "hostname", "macos-gui"] {
+        fixture.create_feature(feature);
+    }
+
+    let result = output(dof(&fixture.home).args(["features", "--json"]));
+
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert_eq!(stdout(&result), "[\"default\"]\n");
 }
 
 #[test]
@@ -67,6 +87,7 @@ features:
   default: false
   laptop: true
   ghost: true
+  work: true
 "#,
     );
     for feature in ["work", "default", "laptop"] {

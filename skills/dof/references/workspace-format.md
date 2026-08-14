@@ -6,9 +6,10 @@ features. The repository checkout lives at `$HOME/.dof/workspace`.
 ## Layout and feature selection
 
 Feature declarations live only in `<workspace>/features/`. Each real directory
-immediately inside that container is a feature. `default` is conventional,
-not required. Repository-level content outside `features/` is not interpreted
-as a feature, so documentation and support scripts may live alongside it. A
+immediately inside that container is a feature. `default` is enabled when it
+has no explicit setting, but is not required. Repository-level content outside
+`features/` is not interpreted as a feature, so documentation and support
+scripts may live alongside it. A
 missing or empty `features/` directory represents a workspace with no
 features. Pass the workspace repository root—not the `features/` directory—to
 `dof lint`. A feature may contain any of these declarations:
@@ -41,9 +42,10 @@ features:
 ```
 
 The `repo` mapping is maintained by `dof clone`; do not hand-edit its endpoint
-fingerprint. An omitted `features` mapping or omitted feature key defaults to
-enabled. An explicit `false` disables that feature for apply, but lint still
-validates it.
+fingerprint. An omitted `features` mapping or omitted `default` key enables the
+`default` feature. Every other feature requires an explicit `true` setting.
+Explicit values always take precedence, and lint still validates disabled
+features.
 Use `dof feature enable <name>` and `dof feature disable <name>` to change these
 values.
 

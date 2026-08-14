@@ -133,10 +133,10 @@ state is not backed up or restored if the new clone fails.
 
 Feature definitions live under `$HOME/.dof/workspace/features`. Each real
 directory immediately inside that directory is a feature. The `default`
-feature is conventional, but no feature is required. Repository content
-outside `features/`, plus files and symlinks inside it, is not treated
-as a feature. An absent or empty `features/` directory represents a workspace
-with no features.
+feature is enabled when it has no explicit setting, but no feature is
+required. Repository content outside `features/`, plus files and symlinks
+inside it, is not treated as a feature. An absent or empty `features/`
+directory represents a workspace with no features.
 
 Feature overrides live in `$HOME/.dof/config.yaml`:
 
@@ -146,8 +146,10 @@ features:
   work: false
 ```
 
-An omitted `features` section or omitted feature name defaults to enabled.
-An explicit `false` disables the corresponding feature.
+An omitted `features` section or omitted `default` setting enables the
+`default` feature. Every other feature is disabled unless its setting is
+explicitly `true`. Explicit settings always take precedence, so `default` can
+also be disabled.
 
 ```sh
 dof features
