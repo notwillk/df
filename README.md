@@ -211,6 +211,40 @@ Each file is staged in its destination directory and installed atomically.
 Unexpected failures can leave earlier files applied; their backups remain
 available. Source symlinks and special files are not supported.
 
+Features can also contribute ordered fragments that compile into one complete
+HOME file. Put fragments beneath a terminal directory in `drop-ins/` whose
+name ends in `.d`; dof strips exactly that final suffix to find the target:
+
+```text
+features/default/drop-ins/.Brewfile.d/10-base
+features/work/drop-ins/.Brewfile.d/20-work
+    -> $HOME/.Brewfile
+
+features/default/drop-ins/.config/systemd/user/example.service.d/override.conf.d/10-base
+    -> $HOME/.config/systemd/user/example.service.d/override.conf
+```
+
+Fragment names must match
+`^[0-9]{2}-[a-z0-9][a-z0-9._-]*$`. Every fragment must be a nonempty UTF-8
+regular file with no NUL bytes and a final newline. For each target, dof sorts
+the enabled fragments by their two-digit order and concatenates their exact
+bytes without separators or generated headers. Order and filename reservations
+are global across all features, so lint rejects duplicate orders or filenames
+even when one of the contributing features is disabled.
+
+A compiled drop-in target is authoritative for the complete file. It cannot
+also be managed by a `home/` payload or `snippets.yaml`, although several
+features may contribute distinct fragment orders to it. A new target is created
+with private `0600` permissions. An existing regular file keeps its permissions;
+an unchanged file is skipped, while a changed file is backed up and atomically
+replaced. A destination leaf symlink is backed up as a link and replaced by a
+regular `0600` file without following it.
+
+If contributors change while at least one remains enabled, the next apply
+recompiles the file from the remaining fragments. If the final contributor is
+disabled or removed, dof leaves the last generated file untouched because it
+does not keep persistent ownership state.
+
 Each feature may also contain a `snippets.yaml` file. Its `snippets` mapping
 uses `$HOME`-relative target paths as keys and arrays of required text as
 values:
@@ -236,22 +270,26 @@ contribute snippets to the same target file. Existing target permissions are
 preserved; newly created snippet targets use private `0600` permissions.
 
 A target managed by snippets cannot also be supplied by any feature's
-`home/` tree. Likewise, a `home/` file can be owned by at most one feature.
-This keeps copy ownership deterministic while still allowing several features
-to contribute independent snippets to one file.
+`home/` tree or compiled from drop-ins. Likewise, a `home/` file can be owned
+by at most one feature. This keeps whole-file ownership deterministic while
+still allowing several features to contribute independent snippets or ordered
+drop-in fragments to their respective targets. Snippets preserve unrelated
+existing content; drop-ins instead replace the complete target with their
+compiled output.
 
 Each feature may also provide an `apply` script at its root, for example
 `features/default/apply`. It must be a regular executable file whose first
 line is a shebang. Workspace linting validates these requirements for every
 feature, including disabled features.
 
-After all `home/` files have been copied and snippets have been applied, `dof
-apply` runs the scripts from enabled features in lexical feature-name order.
-Each script runs with its feature directory as the working directory and
-inherits the `dof` process environment. Scripts run on every invocation, so
-they are responsible for being idempotent. A nonzero exit status stops
-execution immediately and makes `dof apply` fail; scripts for later features
-are not run.
+After all `home/` files have been copied, drop-in targets compiled, and snippets
+applied, `dof apply` runs the scripts from enabled features in lexical
+feature-name order. Each script runs with its feature directory as the working
+directory and inherits the `dof` process environment. Scripts run on every
+invocation, so they are responsible for being idempotent. A nonzero exit status
+stops execution immediately and makes `dof apply` fail; scripts for later
+features are not run. Hooks may modify a generated target, but the next apply
+reconciles it to the compiled drop-in content while contributors remain active.
 
 ## Run a managed script
 
@@ -284,10 +322,11 @@ directory.
 `dof lint` performs read-only validation across every feature, including
 features disabled on the current machine. It rejects a feature named `.dof`,
 payloads targeting `$HOME/.dof`, source symlinks and special files, duplicate
-file destinations, copy/snippet ownership conflicts, and file/directory
-collisions. It also validates each `snippets.yaml` schema and its
-`$HOME`-relative targets. Different features may contribute distinct files
-beneath the same directory or snippets to the same target.
+file destinations, copy/snippet/drop-in ownership conflicts, and file/directory
+collisions. It also validates each `snippets.yaml` schema, every drop-in tree
+and fragment, and their `$HOME`-relative targets. Different features may
+contribute distinct files beneath the same directory, snippets to the same
+target, or uniquely ordered drop-in fragments to the same compiled target.
 
 ## Releases
 

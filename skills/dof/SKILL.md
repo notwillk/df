@@ -1,6 +1,6 @@
 ---
 name: dof
-description: Operate dof and author dof dotfiles workspaces. Use when users mention dof, ~/.dof, dof clone/apply/lint/features/feature/run, feature home payloads, snippets.yaml, feature apply hooks, or need help diagnosing dof validation, ownership, collision, backup, or execution errors. Do not use for the POSIX df disk-space command or unrelated dotfile managers.
+description: Operate dof and author dof dotfiles workspaces. Use when users mention dof, ~/.dof, dof clone/apply/lint/features/feature/run, feature home payloads, drop-ins, snippets.yaml, feature apply hooks, or need help diagnosing dof validation, ownership, collision, backup, or execution errors. Do not use for the POSIX df disk-space command or unrelated dotfile managers.
 ---
 
 # dof
@@ -87,14 +87,19 @@ creating or changing feature declarations. Choose one mechanism for each need:
   when the workspace has no features.
 - Put a complete file under `features/<feature>/home/**` when dof should own
   its full contents.
+- Put ordered whole-file fragments under
+  `features/<feature>/drop-ins/<target>.d/<NN-name>` when several features
+  should compile one authoritative target. Use globally unique two-digit
+  orders for that target.
 - Put exact append-if-absent text in `features/<feature>/snippets.yaml` when
   dof should preserve unrelated content in a text file.
 - Put imperative setup in an executable, shebang-bearing
   `features/<feature>/apply` hook only when declarative files or snippets are
   insufficient. Make the hook idempotent because it runs on every apply.
 
-Never declare anything under `$HOME/.dof` through a `home/` payload or snippet.
-After editing, run lint and fix all errors before proposing an apply.
+Never declare anything under `$HOME/.dof` through a `home/` payload, drop-in,
+or snippet. Do not mix copy, drop-in, or snippet management for one file. After
+editing, run lint and fix all errors before proposing an apply.
 
 ## Enable and disable features
 
@@ -120,10 +125,19 @@ dof apply
 ```
 
 `dof apply` validates the whole workspace, projects the enabled features, then
-processes copied files, snippets, and hooks in deterministic order. It merges
-directories without deleting unrelated files. It skips unchanged managed
-files and places backups for changed existing files in one timestamped
+processes copied files, compiled drop-in targets, snippets, and hooks in that
+order. Drop-ins concatenate exact, globally ordered fragments into the complete
+desired file; unlike snippets, they do not preserve unrelated content. It
+merges directories without deleting unrelated files, skips unchanged managed
+files, and places backups for changed existing files in one timestamped
 `$HOME/.dof/backups/` snapshot.
+
+A new drop-in target uses mode `0600`; an existing regular target keeps its
+mode. A leaf symlink is backed up as a link and replaced without being followed.
+If the last enabled drop-in contributor disappears, the generated target is
+left in place because dof does not track persistent ownership. Hooks run last
+and may change generated files, but a later apply reconciles active drop-in
+targets again.
 
 File replacement is atomic per file, not transactional for the whole command.
 If a later operation or hook fails, earlier changes and their backups remain.
@@ -147,8 +161,8 @@ the user requested.
 
 - Start with the exact failing command's help and `dof lint` diagnostics.
 - For ownership errors, identify every feature claiming the reported target
-  and choose either copy ownership or snippet management as allowed by the
-  workspace format.
+  and choose exactly one of copy ownership, drop-in compilation, or snippet
+  management as allowed by the workspace format.
 - For an apply failure, inspect the reported backup snapshot and determine
   which earlier files changed before retrying. A failing hook may have made
   arbitrary partial changes.

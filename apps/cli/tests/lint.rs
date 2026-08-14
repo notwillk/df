@@ -1,4 +1,8 @@
+#[cfg(target_os = "linux")]
+use std::ffi::OsString;
 use std::fs;
+#[cfg(target_os = "linux")]
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -508,6 +512,259 @@ fn lint_rejects_a_later_snippet_target_that_contains_an_existing_snippet_target(
     assert!(error.contains("zeta"), "{error}");
 }
 
+#[test]
+fn lint_accepts_shared_and_nested_drop_ins_and_empty_roots() {
+    let fixture = Fixture::new();
+    fixture.write_drop_in("alpha", ".Brewfile.d", "00-base", b"tap \"base\"\n");
+    fixture.write_drop_in("zeta", ".Brewfile.d", "99-z_1.foo-bar", b"brew \"zeta\"\n");
+    fixture.write_drop_in(
+        "nested",
+        ".config/systemd/user/example.service.d/override.conf.d",
+        "10-base",
+        b"[Service]\n",
+    );
+    fs::create_dir_all(fixture.feature("empty").join("drop-ins")).unwrap();
+    fixture.feature("missing-drop-ins");
+
+    let result = fixture.lint();
+
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert!(stdout(&result).is_empty());
+}
+
+#[test]
+fn lint_reserves_drop_in_orders_globally_across_features() {
+    let fixture = Fixture::new();
+    fixture.write_drop_in("alpha", ".profile.d", "10-alpha", b"alpha\n");
+    fixture.write_drop_in("zeta", ".profile.d", "10-zeta", b"zeta\n");
+
+    let result = fixture.lint();
+
+    assert!(!result.status.success());
+    let error = stderr(&result);
+    assert!(error.contains(".profile"), "{error}");
+    assert!(error.contains("alpha"), "{error}");
+    assert!(error.contains("zeta"), "{error}");
+
+    let duplicate_name = Fixture::new();
+    duplicate_name.write_drop_in("alpha", ".bashrc.d", "20-shared", b"alpha\n");
+    duplicate_name.write_drop_in("zeta", ".bashrc.d", "20-shared", b"zeta\n");
+    let result = duplicate_name.lint();
+    assert!(!result.status.success());
+    let error = stderr(&result);
+    assert!(error.contains(".bashrc"), "{error}");
+    assert!(error.contains("20-shared"), "{error}");
+    assert!(error.contains("alpha"), "{error}");
+    assert!(error.contains("zeta"), "{error}");
+}
+
+#[test]
+fn lint_rejects_invalid_drop_in_tree_shapes() {
+    let orphan = Fixture::new();
+    let root = orphan.drop_ins("default");
+    fs::write(root.join("10-orphan"), "orphan\n").unwrap();
+    assert_drop_in_lint_failure(&orphan, "drop-ins root");
+
+    let empty = Fixture::new();
+    fs::create_dir_all(empty.drop_ins("default").join("empty-container")).unwrap();
+    assert_drop_in_lint_failure(&empty, "empty-container");
+
+    let missing_suffix = Fixture::new();
+    let terminal = missing_suffix.drop_ins("default").join(".config/tool");
+    fs::create_dir_all(&terminal).unwrap();
+    fs::write(terminal.join("10-base"), "managed\n").unwrap();
+    assert_drop_in_lint_failure(&missing_suffix, ".config/tool");
+
+    let mixed = Fixture::new();
+    let terminal = mixed.drop_ins("default").join(".profile.d");
+    fs::create_dir_all(terminal.join("child")).unwrap();
+    fs::write(terminal.join("10-base"), "managed\n").unwrap();
+    fs::write(terminal.join("child/20-extra"), "extra\n").unwrap();
+    assert_drop_in_lint_failure(&mixed, ".profile.d");
+}
+
+#[test]
+fn lint_rejects_invalid_drop_in_names_and_contents() {
+    for filename in [
+        "0-short",
+        "100-long",
+        "10-Uppercase",
+        "10-_leading",
+        "10-has space",
+    ] {
+        let fixture = Fixture::new();
+        fixture.write_drop_in("default", ".profile.d", filename, b"managed\n");
+        assert_drop_in_lint_failure(&fixture, filename);
+    }
+
+    for (name, contents) in [
+        ("empty", Vec::new()),
+        ("invalid UTF-8", vec![0xff, b'\n']),
+        ("NUL byte", b"managed\0\n".to_vec()),
+        ("missing final newline", b"managed".to_vec()),
+    ] {
+        let fixture = Fixture::new();
+        fixture.write_drop_in("default", ".profile.d", "10-base", &contents);
+        let result = fixture.lint();
+        assert!(!result.status.success(), "{name} unexpectedly passed lint");
+        assert!(stderr(&result).contains("10-base"), "{}", stderr(&result));
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn lint_rejects_non_utf8_drop_in_directories() {
+    let non_utf8 = Fixture::new();
+    let name = OsString::from_vec(vec![0xff, b'.', b'd']);
+    let terminal = non_utf8.drop_ins("default").join(name);
+    fs::create_dir_all(&terminal).unwrap();
+    fs::write(terminal.join("10-base"), "managed\n").unwrap();
+    let result = non_utf8.lint();
+    assert!(!result.status.success());
+}
+
+#[test]
+fn lint_rejects_symlinked_and_special_drop_in_sources() {
+    let linked_fragment = Fixture::new();
+    let external = linked_fragment.root.path().join("external-fragment");
+    fs::write(&external, "external\n").unwrap();
+    let terminal = linked_fragment.drop_ins("default").join(".profile.d");
+    fs::create_dir_all(&terminal).unwrap();
+    symlink(&external, terminal.join("10-base")).unwrap();
+    assert_drop_in_lint_failure(&linked_fragment, "10-base");
+
+    let special_fragment = Fixture::new();
+    let terminal = special_fragment.drop_ins("default").join(".profile.d");
+    fs::create_dir_all(&terminal).unwrap();
+    let _socket = create_unix_socket(&terminal.join("10-base"));
+    assert_drop_in_lint_failure(&special_fragment, "10-base");
+
+    let linked_root = Fixture::new();
+    let external = linked_root.root.path().join("external-drop-ins");
+    fs::create_dir_all(external.join(".profile.d")).unwrap();
+    fs::write(external.join(".profile.d/10-base"), "external\n").unwrap();
+    symlink(&external, linked_root.feature("default").join("drop-ins")).unwrap();
+    assert_drop_in_lint_failure(&linked_root, "drop-ins");
+}
+
+#[test]
+fn lint_rejects_drop_in_copy_snippet_and_structural_collisions() {
+    let copy = Fixture::new();
+    fs::write(copy.feature_home("copy-owner").join(".profile"), "copy\n").unwrap();
+    copy.write_drop_in("drop-owner", ".profile.d", "10-base", b"drop-in\n");
+    assert_collision_mentions(&copy, ".profile", "copy-owner", "drop-owner");
+
+    let snippets = Fixture::new();
+    snippets.write_snippets(
+        "snippet-owner",
+        "snippets:\n  .bashrc:\n    - 'snippet managed'\n",
+    );
+    snippets.write_drop_in("drop-owner", ".bashrc.d", "10-base", b"drop-in\n");
+    assert_collision_mentions(&snippets, ".bashrc", "snippet-owner", "drop-owner");
+
+    let drop_ancestor = Fixture::new();
+    let home = drop_ancestor.feature_home("copy-owner");
+    fs::create_dir_all(home.join(".config")).unwrap();
+    fs::write(home.join(".config/tool"), "copy\n").unwrap();
+    drop_ancestor.write_drop_in("drop-owner", ".config.d", "10-base", b"drop-in\n");
+    assert_collision_mentions(&drop_ancestor, ".config", "copy-owner", "drop-owner");
+
+    let drop_descendant = Fixture::new();
+    fs::write(
+        drop_descendant.feature_home("copy-owner").join(".local"),
+        "copy\n",
+    )
+    .unwrap();
+    drop_descendant.write_drop_in("drop-owner", ".local/share.conf.d", "10-base", b"drop-in\n");
+    assert_collision_mentions(&drop_descendant, ".local", "copy-owner", "drop-owner");
+
+    let nested_drop_ins = Fixture::new();
+    let ancestor = nested_drop_ins.write_drop_in("ancestor", ".config.d", "10-base", b"ancestor\n");
+    let descendant = nested_drop_ins.write_drop_in(
+        "descendant",
+        ".config/tool.conf.d",
+        "20-tool",
+        b"descendant\n",
+    );
+    let result = nested_drop_ins.lint();
+    assert!(!result.status.success());
+    let error = stderr(&result);
+    assert!(error.contains(&ancestor.display().to_string()), "{error}");
+    assert!(error.contains(&descendant.display().to_string()), "{error}");
+}
+
+#[test]
+fn lint_rejects_ascii_case_aliases_involving_drop_ins() {
+    let implied_parent = Fixture::new();
+    let home = implied_parent.feature_home("copy-owner");
+    fs::create_dir_all(home.join(".config")).unwrap();
+    fs::write(home.join(".config/other"), "copy\n").unwrap();
+    implied_parent.write_drop_in("drop-owner", ".Config/tool.conf.d", "10-base", b"drop-in\n");
+    assert_collision_mentions(&implied_parent, ".Config", "copy-owner", "drop-owner");
+
+    let exact = Fixture::new();
+    exact.write_snippets(
+        "snippet-owner",
+        "snippets:\n  .profile:\n    - 'snippet managed'\n",
+    );
+    exact.write_drop_in("drop-owner", ".PROFILE.d", "10-base", b"drop-in\n");
+    assert_collision_mentions(&exact, ".PROFILE", "snippet-owner", "drop-owner");
+
+    let two_drop_ins = Fixture::new();
+    two_drop_ins.write_drop_in("alpha", "Tool.conf.d", "10-alpha", b"alpha\n");
+    two_drop_ins.write_drop_in("zeta", "tool.CONF.d", "20-zeta", b"zeta\n");
+    assert_collision_mentions(&two_drop_ins, "Tool.conf", "alpha", "zeta");
+}
+
+#[test]
+fn lint_rejects_ascii_case_variants_of_dof_state_as_drop_in_targets() {
+    for target in [".dof/config.yaml.d", ".DOF/config.yaml.d", ".DoF.d"] {
+        let fixture = Fixture::new();
+        fixture.write_drop_in("default", target, "10-base", b"managed\n");
+        let result = fixture.lint();
+        assert!(
+            !result.status.success(),
+            "unsafe target {target} passed lint"
+        );
+        assert!(stderr(&result).to_ascii_lowercase().contains(".dof"));
+    }
+}
+
+fn assert_drop_in_lint_failure(fixture: &Fixture, expected_context: &str) {
+    let result = fixture.lint();
+    assert!(
+        !result.status.success(),
+        "{expected_context} unexpectedly passed lint"
+    );
+    assert!(
+        stderr(&result).contains(expected_context),
+        "expected diagnostic context {expected_context:?}, got: {}",
+        stderr(&result)
+    );
+}
+
+fn assert_collision_mentions(
+    fixture: &Fixture,
+    target: &str,
+    first_feature: &str,
+    second_feature: &str,
+) {
+    let result = fixture.lint();
+    assert!(
+        !result.status.success(),
+        "collision at {target} unexpectedly passed"
+    );
+    let error = stderr(&result);
+    assert!(
+        error
+            .to_ascii_lowercase()
+            .contains(&target.to_ascii_lowercase()),
+        "{error}"
+    );
+    assert!(error.contains(first_feature), "{error}");
+    assert!(error.contains(second_feature), "{error}");
+}
+
 struct Fixture {
     root: TempDir,
     home: PathBuf,
@@ -560,5 +817,25 @@ impl Fixture {
         let feature = self.feature(feature);
         fs::create_dir_all(&feature).unwrap();
         fs::write(feature.join("snippets.yaml"), contents).unwrap();
+    }
+
+    fn drop_ins(&self, feature: &str) -> PathBuf {
+        let root = self.feature(feature).join("drop-ins");
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn write_drop_in(
+        &self,
+        feature: &str,
+        target_directory: &str,
+        fragment: &str,
+        contents: &[u8],
+    ) -> PathBuf {
+        let directory = self.drop_ins(feature).join(target_directory);
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(fragment);
+        fs::write(&path, contents).unwrap();
+        path
     }
 }

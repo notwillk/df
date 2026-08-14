@@ -1,6 +1,6 @@
 use std::fs;
 use std::ops::Deref;
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{MetadataExt, symlink};
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
@@ -12,6 +12,10 @@ use support::{
 
 #[test]
 fn apply_help_describes_a_zero_argument_command() {
+    let root_help = output(Command::new(binary()).arg("--help"));
+    assert!(root_help.status.success(), "{}", stderr(&root_help));
+    assert!(stdout(&root_help).contains("Apply enabled feature resources to the home directory"));
+
     let help = output(Command::new(binary()).args(["apply", "--help"]));
     assert!(help.status.success(), "{}", stderr(&help));
     assert!(stdout(&help).contains("Usage: dof apply"));
@@ -1138,6 +1142,328 @@ features:
     assert!(backup_snapshots(&fixture).is_empty());
 }
 
+#[test]
+fn drop_ins_compile_enabled_features_by_global_order_with_exact_bytes() {
+    let fixture = Fixture::new();
+    fixture.write_config(
+        r#"repo:
+  url: file:///dotfiles
+  branch: main
+features:
+  alpha: true
+  disabled: false
+  zeta: true
+"#,
+    );
+    fixture.write_drop_in("zeta", ".Brewfile.d", "10-base", "tap \"base\"\r\n\n");
+    fixture.write_drop_in(
+        "disabled",
+        ".Brewfile.d",
+        "20-disabled",
+        "brew \"disabled\"\n",
+    );
+    fixture.write_drop_in("omitted", ".Brewfile.d", "50-omitted", "brew \"omitted\"\n");
+    fixture.write_drop_in("alpha", ".Brewfile.d", "90-personal", "brew \"personal\"\n");
+
+    let result = output(dof(&fixture.home).arg("apply"));
+
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert_summary(&result, 1, 0);
+    let target = fixture.home.join(".Brewfile");
+    assert_eq!(
+        fs::read(&target).unwrap(),
+        b"tap \"base\"\r\n\nbrew \"personal\"\n"
+    );
+    assert_eq!(mode(&target), 0o600);
+    assert!(backup_snapshots(&fixture).is_empty());
+}
+
+#[test]
+fn drop_ins_rebuild_for_active_contributors_but_leave_the_last_output() {
+    let fixture = Fixture::new();
+    fixture.write_config(
+        r#"repo:
+  url: file:///dotfiles
+  branch: main
+features:
+  alpha: true
+  beta: true
+"#,
+    );
+    let alpha = fixture.write_drop_in("alpha", ".profile.d", "10-alpha", "alpha\n");
+    let beta = fixture.write_drop_in("beta", ".profile.d", "20-beta", "beta\n");
+    let target = fixture.home.join(".profile");
+
+    let first = output(dof(&fixture.home).arg("apply"));
+    assert!(first.status.success(), "{}", stderr(&first));
+    assert_eq!(fs::read_to_string(&target).unwrap(), "alpha\nbeta\n");
+
+    fs::write(&alpha, "updated alpha\n").unwrap();
+    fixture.write_config(
+        r#"repo:
+  url: file:///dotfiles
+  branch: main
+features:
+  alpha: true
+  beta: false
+"#,
+    );
+    let second = output(dof(&fixture.home).arg("apply"));
+    assert!(second.status.success(), "{}", stderr(&second));
+    assert_eq!(fs::read_to_string(&target).unwrap(), "updated alpha\n");
+
+    let retained_inode = fs::metadata(&target).unwrap().ino();
+    let retained_snapshots = backup_snapshots(&fixture);
+    fixture.write_config(
+        r#"repo:
+  url: file:///dotfiles
+  branch: main
+features:
+  alpha: false
+  beta: false
+"#,
+    );
+    let disabled = output(dof(&fixture.home).arg("apply"));
+    assert!(disabled.status.success(), "{}", stderr(&disabled));
+    assert_summary(&disabled, 0, 0);
+    assert_eq!(fs::read_to_string(&target).unwrap(), "updated alpha\n");
+    assert_eq!(fs::metadata(&target).unwrap().ino(), retained_inode);
+    assert_eq!(backup_snapshots(&fixture), retained_snapshots);
+
+    fs::remove_file(alpha).unwrap();
+    fs::remove_file(beta).unwrap();
+    fs::remove_dir(fixture.feature("alpha").join("drop-ins/.profile.d")).unwrap();
+    fs::remove_dir(fixture.feature("beta").join("drop-ins/.profile.d")).unwrap();
+    let removed = output(dof(&fixture.home).arg("apply"));
+    assert!(removed.status.success(), "{}", stderr(&removed));
+    assert_summary(&removed, 0, 0);
+    assert_eq!(
+        fs::read_to_string(&target).unwrap(),
+        "updated alpha\n",
+        "dof must not delete an output after its final contributor disappears"
+    );
+    assert_eq!(fs::metadata(&target).unwrap().ino(), retained_inode);
+    assert_eq!(backup_snapshots(&fixture), retained_snapshots);
+}
+
+#[test]
+fn drop_in_targets_use_modes_backups_atomic_noops_and_a_shared_snapshot() {
+    let fixture = Fixture::new();
+    fixture.write_config(
+        r#"repo:
+  url: file:///dotfiles
+  branch: main
+features:
+  copy: true
+  snippets: true
+"#,
+    );
+    let new_fragment = fixture.write_drop_in("default", "new.conf.d", "10-base", "new\n");
+    set_mode(&new_fragment, 0o777);
+    fixture.write_drop_in("default", "changed.conf.d", "10-base", "managed\n");
+    fixture.write_drop_in("default", "same.conf.d", "10-base", "same\n");
+    fixture.write_drop_in("default", "linked.conf.d", "10-base", "replacement\n");
+
+    let changed = fixture.home.join("changed.conf");
+    fs::write(&changed, "original\n").unwrap();
+    set_mode(&changed, 0o640);
+    let same = fixture.home.join("same.conf");
+    fs::write(&same, "same\n").unwrap();
+    set_mode(&same, 0o604);
+    let same_inode = fs::metadata(&same).unwrap().ino();
+
+    let external = fixture.root.path().join("external-linked.conf");
+    fs::write(&external, "external\n").unwrap();
+    let linked = fixture.home.join("linked.conf");
+    symlink(&external, &linked).unwrap();
+
+    let copy_source = fixture.feature_home("copy").join("copied.conf");
+    fs::write(&copy_source, "new copy\n").unwrap();
+    fs::write(fixture.home.join("copied.conf"), "old copy\n").unwrap();
+    fixture.write_snippets(
+        "snippets",
+        "snippets:\n  snippet.conf:\n    - 'managed snippet'\n",
+    );
+    fs::write(fixture.home.join("snippet.conf"), "old snippet\n").unwrap();
+
+    let result = output(dof(&fixture.home).arg("apply"));
+
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert_summary(&result, 5, 1);
+    assert_eq!(
+        fs::read_to_string(fixture.home.join("new.conf")).unwrap(),
+        "new\n"
+    );
+    assert_eq!(mode(&fixture.home.join("new.conf")), 0o600);
+    assert_eq!(fs::read_to_string(&changed).unwrap(), "managed\n");
+    assert_eq!(mode(&changed), 0o640);
+    assert_eq!(fs::metadata(&same).unwrap().ino(), same_inode);
+    assert_eq!(mode(&same), 0o604);
+    assert_eq!(fs::read_to_string(&linked).unwrap(), "replacement\n");
+    assert_eq!(mode(&linked), 0o600);
+    assert_eq!(fs::read_to_string(&external).unwrap(), "external\n");
+
+    let snapshots = backup_snapshots(&fixture);
+    assert_eq!(
+        snapshots.len(),
+        1,
+        "all resource kinds must share a snapshot"
+    );
+    let snapshot = &snapshots[0];
+    assert_eq!(
+        fs::read_to_string(snapshot.join("changed.conf")).unwrap(),
+        "original\n"
+    );
+    assert_eq!(mode(&snapshot.join("changed.conf")), 0o640);
+    assert!(!snapshot.join("new.conf").exists());
+    assert!(!snapshot.join("same.conf").exists());
+    let backed_up_link = snapshot.join("linked.conf");
+    assert!(
+        fs::symlink_metadata(&backed_up_link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(fs::read_link(backed_up_link).unwrap(), external);
+    assert_eq!(
+        fs::read_to_string(snapshot.join("copied.conf")).unwrap(),
+        "old copy\n"
+    );
+    assert_eq!(
+        fs::read_to_string(snapshot.join("snippet.conf")).unwrap(),
+        "old snippet\n"
+    );
+}
+
+#[test]
+fn nested_drop_ins_apply_with_relative_home_before_feature_hooks() {
+    let fixture = Fixture::new();
+    fixture.write_drop_in(
+        "default",
+        ".config/systemd/user/example.service.d/override.conf.d",
+        "10-base",
+        "[Service]\nEnvironment=DOF=1\n",
+    );
+    let target = fixture
+        .home
+        .join(".config/systemd/user/example.service.d/override.conf");
+    let marker = fixture.home.join("hook-observed-drop-in");
+    fixture.write_apply_script(
+        "default",
+        "#!/bin/sh\ncmp -s \"$DOF_DROP_IN_TARGET\" \"$DOF_DROP_IN_EXPECTED\" && printf 'observed\\n' > \"$DOF_DROP_IN_MARKER\"\n",
+    );
+    let expected = fixture.root.path().join("expected-drop-in");
+    fs::write(&expected, "[Service]\nEnvironment=DOF=1\n").unwrap();
+    let relative_home = fixture.home.strip_prefix(fixture.root.path()).unwrap();
+
+    let result = output(
+        Command::new(binary())
+            .current_dir(fixture.root.path())
+            .env("HOME", relative_home)
+            .env("DOF_DROP_IN_TARGET", &target)
+            .env("DOF_DROP_IN_EXPECTED", &expected)
+            .env("DOF_DROP_IN_MARKER", &marker)
+            .arg("apply"),
+    );
+
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert_eq!(
+        fs::read_to_string(target).unwrap(),
+        "[Service]\nEnvironment=DOF=1\n"
+    );
+    assert_eq!(fs::read_to_string(marker).unwrap(), "observed\n");
+}
+
+#[test]
+fn invalid_disabled_drop_ins_and_ownership_conflicts_fail_before_mutation() {
+    let invalid = Fixture::new();
+    invalid.write_config(
+        r#"repo:
+  url: file:///dotfiles
+  branch: main
+features:
+  a-safe: true
+  z-invalid: false
+"#,
+    );
+    prepare_preflight_sentinel(&invalid);
+    let invalid_root = invalid.feature("z-invalid").join("drop-ins");
+    fs::create_dir_all(&invalid_root).unwrap();
+    fs::write(invalid_root.join("orphan"), "invalid\n").unwrap();
+
+    let result = output(dof(&invalid.home).arg("apply"));
+    assert!(!result.status.success());
+    assert_preflight_left_home_unchanged(&invalid);
+
+    let direct = Fixture::new();
+    direct.write_config(
+        r#"repo:
+  url: file:///dotfiles
+  branch: main
+features:
+  a-safe: true
+"#,
+    );
+    prepare_preflight_sentinel(&direct);
+    fs::write(direct.feature_home("copy-owner").join(".profile"), "copy\n").unwrap();
+    direct.write_drop_in("drop-owner", ".profile.d", "10-base", "drop-in\n");
+
+    let result = output(dof(&direct.home).arg("apply"));
+    assert!(!result.status.success());
+    assert_preflight_left_home_unchanged(&direct);
+
+    let case_alias = Fixture::new();
+    case_alias.write_config(
+        r#"repo:
+  url: file:///dotfiles
+  branch: main
+features:
+  a-safe: true
+"#,
+    );
+    prepare_preflight_sentinel(&case_alias);
+    let copy_home = case_alias.feature_home("copy-owner");
+    fs::create_dir_all(copy_home.join(".config")).unwrap();
+    fs::write(copy_home.join(".config/other"), "copy\n").unwrap();
+    case_alias.write_drop_in("drop-owner", ".Config/tool.conf.d", "10-base", "drop-in\n");
+
+    let result = output(dof(&case_alias.home).arg("apply"));
+    assert!(!result.status.success());
+    assert_preflight_left_home_unchanged(&case_alias);
+}
+
+#[test]
+fn invalid_drop_in_destination_shapes_fail_before_any_home_mutation() {
+    let ancestor_link = Fixture::new();
+    ancestor_link.write_config(&config_with_enabled_safe_and("z-drop-in"));
+    prepare_preflight_sentinel(&ancestor_link);
+    ancestor_link.write_drop_in("z-drop-in", ".config/tool.conf.d", "10-base", "managed\n");
+    let external = ancestor_link.root.path().join("external-config");
+    fs::create_dir(&external).unwrap();
+    symlink(&external, ancestor_link.home.join(".config")).unwrap();
+    let result = output(dof(&ancestor_link.home).arg("apply"));
+    assert!(!result.status.success());
+    assert_preflight_left_home_unchanged(&ancestor_link);
+
+    let leaf_directory = Fixture::new();
+    leaf_directory.write_config(&config_with_enabled_safe_and("z-drop-in"));
+    prepare_preflight_sentinel(&leaf_directory);
+    leaf_directory.write_drop_in("z-drop-in", "settings.conf.d", "10-base", "managed\n");
+    fs::create_dir(leaf_directory.home.join("settings.conf")).unwrap();
+    let result = output(dof(&leaf_directory.home).arg("apply"));
+    assert!(!result.status.success());
+    assert_preflight_left_home_unchanged(&leaf_directory);
+
+    let special_leaf = Fixture::new();
+    special_leaf.write_config(&config_with_enabled_safe_and("z-drop-in"));
+    prepare_preflight_sentinel(&special_leaf);
+    special_leaf.write_drop_in("z-drop-in", "agent.sock.d", "10-base", "managed\n");
+    let _socket = create_unix_socket(&special_leaf.home.join("agent.sock"));
+    let result = output(dof(&special_leaf.home).arg("apply"));
+    assert!(!result.status.success());
+    assert_preflight_left_home_unchanged(&special_leaf);
+}
+
 fn prepare_preflight_sentinel(fixture: &Fixture) {
     let source = fixture.feature_home("a-safe");
     fs::write(source.join("sentinel"), "new\n").unwrap();
@@ -1246,5 +1572,22 @@ impl Fixture {
 
     fn write_snippets(&self, feature: &str, contents: &str) {
         fs::write(self.feature(feature).join("snippets.yaml"), contents).unwrap();
+    }
+
+    fn write_drop_in(
+        &self,
+        feature: &str,
+        target_directory: &str,
+        fragment: &str,
+        contents: &str,
+    ) -> PathBuf {
+        let directory = self
+            .feature(feature)
+            .join("drop-ins")
+            .join(target_directory);
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(fragment);
+        fs::write(&path, contents).unwrap();
+        path
     }
 }

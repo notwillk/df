@@ -36,6 +36,7 @@ pub(crate) fn apply() -> Result<()> {
 struct ActiveWorkspace {
     directories: BTreeSet<HomePath>,
     copies: Vec<(HomePath, PathBuf)>,
+    drop_ins: Vec<(HomePath, Vec<u8>)>,
     snippets: Vec<(HomePath, Vec<String>)>,
     scripts: Vec<PlannedScript>,
 }
@@ -45,6 +46,7 @@ impl ActiveWorkspace {
         let (targets, scripts) = workspace.into_parts();
         let mut directories = BTreeSet::new();
         let mut copies = Vec::new();
+        let mut drop_ins = Vec::new();
         let mut snippets = Vec::new();
 
         for (path, target) in targets {
@@ -60,6 +62,17 @@ impl ActiveWorkspace {
                 Target::CopyFile { feature, source } => {
                     if config.feature_enabled(&feature) {
                         copies.push((path, source));
+                    }
+                }
+                Target::DropIns { fragments } => {
+                    let mut contents = Vec::new();
+                    for fragment in fragments {
+                        if config.feature_enabled(&fragment.feature) {
+                            contents.extend_from_slice(&fragment.contents);
+                        }
+                    }
+                    if !contents.is_empty() {
+                        drop_ins.push((path, contents));
                     }
                 }
                 Target::Snippets { contributions } => {
@@ -88,6 +101,7 @@ impl ActiveWorkspace {
         Self {
             directories,
             copies,
+            drop_ins,
             snippets,
             scripts,
         }
@@ -179,6 +193,45 @@ impl ApplyPlan {
             changes.push(FileChange {
                 target,
                 contents: DesiredContents::Copy(source),
+                mode,
+                expected,
+            });
+        }
+
+        // Drop-ins own the complete generated file. Their fragments were
+        // globally validated and sorted before enabled-feature projection.
+        for (target, contents) in active.drop_ins {
+            home.preflight_file_parent(&target)?;
+            let (mode, expected) = match home.observe(&target)? {
+                ObservedTarget::Regular {
+                    expected,
+                    mode,
+                    length,
+                } => {
+                    if length == contents.len() as u64
+                        && home.contents_equal_bytes(&contents, &target, &expected)?
+                    {
+                        unchanged += 1;
+                        continue;
+                    }
+                    (mode, expected)
+                }
+                ObservedTarget::Symlink { expected } => (0o600, expected),
+                ObservedTarget::Directory => bail!(
+                    "drop-in destination {} is an existing directory",
+                    home.path(&target).display()
+                ),
+                ObservedTarget::Unsupported => bail!(
+                    "drop-in destination {} has an unsupported file type",
+                    home.path(&target).display()
+                ),
+                ObservedTarget::Missing => (0o600, ExpectedState::Missing),
+            };
+
+            active.directories.extend(target.parents());
+            changes.push(FileChange {
+                target,
+                contents: DesiredContents::Generated(contents),
                 mode,
                 expected,
             });

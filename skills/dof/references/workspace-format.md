@@ -22,11 +22,17 @@ workspace/
     │   ├── home/
     │   │   ├── .bashrc
     │   │   └── .config/tool/settings.yaml
+    │   ├── drop-ins/
+    │   │   └── .Brewfile.d/
+    │   │       └── 10-base
     │   ├── snippets.yaml
     │   └── apply
     └── work/
-        └── home/
-            └── .gitconfig
+        ├── home/
+        │   └── .gitconfig
+        └── drop-ins/
+            └── .Brewfile.d/
+                └── 20-work
 ```
 
 Feature selection is machine-local in `$HOME/.dof/config.yaml`:
@@ -73,6 +79,65 @@ Never create a feature named `.dof` or a payload rooted at
 `features/<feature>/home/.dof`. Dof state, configuration, workspaces,
 binaries, and backups cannot manage themselves.
 
+## Whole-file compilation with `drop-ins/`
+
+Use `features/<feature>/drop-ins/` when multiple features should contribute
+ordered fragments to one authoritative HOME file. A terminal directory ending
+in `.d` is a compilation unit. Strip exactly that final suffix from its
+HOME-relative path to find the output:
+
+```text
+features/default/drop-ins/.Brewfile.d/10-base
+features/work/drop-ins/.Brewfile.d/20-work
+    -> $HOME/.Brewfile
+
+features/default/drop-ins/.config/systemd/user/example.service.d/override.conf.d/10-base
+    -> $HOME/.config/systemd/user/example.service.d/override.conf
+```
+
+The `example.service.d` component remains because only the terminal
+`override.conf.d` suffix is stripped. Directory components beneath `drop-ins/`
+must be valid UTF-8. Targets must be nonempty safe relative paths, cannot begin
+with any ASCII case variant of `.dof`, and cannot collide by ASCII case with
+another managed target or implied parent when a drop-in is involved.
+
+A fragment name must match this exact grammar:
+
+```text
+^[0-9]{2}-[a-z0-9][a-z0-9._-]*$
+```
+
+Each fragment must be a nonempty UTF-8 regular file, contain no NUL byte, and
+end in a newline. Source symlinks and special files are invalid; fragment
+permission bits do not affect the generated target. Within a terminal
+directory, only fragment files are allowed. An intermediate directory may
+contain only child directories. Mixed files and directories, orphan files,
+and empty nested directories are errors. The top-level `drop-ins/` directory
+itself may be missing or empty.
+
+For one target, every fragment's two-digit numeric order and complete filename
+are reserved globally across all features, including disabled features. Lint
+therefore rejects two `10-*` fragments for the same target even if only one
+feature is enabled. At apply time, dof selects enabled contributors, sorts them
+solely by numeric order, and concatenates their exact bytes with no separators,
+headers, or implicit existing-file prefix. The result owns the target's complete
+contents.
+
+Several features may contribute uniquely ordered fragments to one target. A
+drop-in target cannot also be supplied by a `home/` payload or managed by
+snippets, and it participates in the same file/ancestor structural collision
+checks as other whole-file resources.
+
+A missing output is created with mode `0600`. An existing regular output keeps
+its mode and is left untouched when its bytes already match. A changed regular
+file is backed up and atomically replaced. A destination leaf symlink is backed
+up as a link, then replaced without following it by a regular `0600` file.
+
+Changing or disabling one contributor recompiles the target from the remaining
+enabled fragments on the next apply. If the last contributor is disabled or
+removed, dof leaves the last generated file in place because it does not keep
+persistent ownership state.
+
 ## Append-if-absent text with `snippets.yaml`
 
 An optional `features/<feature>/snippets.yaml` is a real UTF-8 regular file
@@ -100,10 +165,10 @@ same declarations does not append an already present string.
 
 Multiple features may contribute snippets to the same target. A
 snippet-managed file cannot also be supplied by any feature's `home/` tree,
-and file/ancestor structural collisions remain invalid. Snippet targets must
-be nonempty relative paths containing no traversal and cannot begin with
-`.dof`. Arrays must contain YAML strings; numeric and other scalar types are
-schema errors.
+compiled from drop-ins, or participate in a file/ancestor structural
+collision. Snippet targets must be nonempty relative paths containing no
+traversal and cannot begin with `.dof`. Arrays must contain YAML strings;
+numeric and other scalar types are schema errors.
 
 An existing snippet target must be a regular UTF-8 file; a destination symlink
 is rejected rather than followed. Dof preserves an existing target's mode and
@@ -124,9 +189,11 @@ fi
 ```
 
 Make every action idempotent. Enabled hooks run on every `dof apply`, after all
-copied files and snippets, in lexical feature-name order. A hook runs with its
-feature directory as the working directory and inherits the user's process
-environment and standard streams. A nonzero result stops later hooks.
+copied files, compiled drop-in targets, and snippets, in lexical feature-name
+order. A hook runs with its feature directory as the working directory and
+inherits the user's process environment and standard streams. A nonzero result
+stops later hooks. A hook may modify a generated target, but a later apply
+reconciles that file to its compiled content while contributors remain active.
 
 Do not add network installers like the example without the user's informed
 authorization and an appropriate trust review.
@@ -137,11 +204,13 @@ Before mutation, apply validates declarations from all features, including
 disabled ones, and preflights destination shapes. Destination ancestor
 symlinks and file/directory conflicts fail before home-directory changes.
 
-Unchanged copied files are skipped. New files do not need backups. Before
-replacing changed existing files, dof mirrors the prior leaf into one private
-timestamped snapshot under `$HOME/.dof/backups/`; a copied-file destination
-symlink is backed up as a link and replaced without following it. Writes are
-staged beside their destination and installed atomically per file.
+Unchanged copied or compiled files are skipped. New files do not need backups.
+Before replacing changed existing files, dof mirrors the prior leaf into one
+private timestamped snapshot under `$HOME/.dof/backups/`; copied-file and
+drop-in destination symlinks are backed up as links and replaced without
+following them. All declarative changes in one invocation share that lazy
+snapshot. Writes are staged beside their destination and installed atomically
+per file.
 
 The entire apply is not a transaction. If later I/O or an imperative hook
 fails, earlier successful changes and their backups remain.
