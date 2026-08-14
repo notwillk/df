@@ -67,8 +67,8 @@ supported macOS version may therefore move when GitHub updates that image.
 ## Verify a release manually
 
 Download an archive plus `checksums.txt`, `checksums.txt.sig`, and the public
-key from `keys/signing-key.asc` at the same release tag. Use a temporary GPG
-home so verification does not modify the user's normal keyring:
+key from `keys/signing-key.asc` at the same release tag. With GnuPG, use a
+temporary home so verification does not modify the user's normal keyring:
 
 ```sh
 verification_home=$(mktemp -d)
@@ -76,6 +76,17 @@ chmod 700 "$verification_home"
 gpg --homedir "$verification_home" --import signing-key.asc
 gpg --homedir "$verification_home" --verify checksums.txt.sig checksums.txt
 ```
+
+Alternatively, verify with a current Sequoia `sq` release:
+
+```sh
+sq verify --signer-file signing-key.asc \
+  --signature-file checksums.txt.sig checksums.txt
+```
+
+The curl installer feature-detects both current and supported legacy Sequoia
+verification syntax rather than assuming that an executable named `sq` is the
+OpenPGP tool.
 
 On Linux, verify the selected archive with:
 
@@ -89,18 +100,37 @@ On macOS, compare the selected line in `checksums.txt` with:
 shasum -a 256 dof_darwin_aarch64.tar.gz
 ```
 
-Confirm the imported key's full fingerprint against the independently
-recorded fingerprint before trusting the signature. Remove the temporary GPG
-home after verification.
+Confirm the downloaded signing key's full fingerprint against the independently
+recorded fingerprint before trusting the signature. If using GnuPG, remove the
+temporary GPG home after verification.
 
 ## Installer contract
 
 The curl installer resolves `DOF_VERSION=latest` through GitHub's latest
 release API; an explicit version must be an exact `vX.Y.Z` tag. `DEST` is a
-directory and defaults to `/usr/local/bin`. The installer refuses unsupported
-systems, a missing release-tagged public key, an invalid detached signature,
-a missing or duplicate archive entry in the manifest, and any checksum
-mismatch.
+directory and defaults to `/usr/local/bin`. Signature verification prefers
+GnuPG and falls back to a compatible Sequoia `sq` only when GnuPG is
+unavailable. The selected verifier's result is authoritative. By default, the
+installer refuses unsupported systems, an unavailable verifier, a missing
+release-tagged public key or signature, an invalid detached signature, a
+missing or duplicate archive entry in the manifest, and any checksum mismatch.
+
+`--ignore-signature-validation` permits installation only when the OpenPGP
+verifier or signing assets are unavailable or verification fails. The installer
+still attempts verification when possible and emits a warning when a failure
+is ignored. It never bypasses manifest-entry, SHA-256, archive-shape,
+executable, or symlink checks. Because those checks rely on the signed
+manifest, ignoring signature validation leaves the checksum unauthenticated.
+When piping the installer, pass the option to the shell explicitly:
+
+```sh
+curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+  https://raw.githubusercontent.com/notwillk/dof/main/scripts/install.sh | \
+  sh -s -- --ignore-signature-validation
+```
+
+Any outer installer, including the `notwillk/dotfiles` wrapper, must explicitly
+forward the option to the `dof` installer.
 
 The installer contract can be exercised without network or privilege changes:
 

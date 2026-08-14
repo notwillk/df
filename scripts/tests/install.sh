@@ -10,6 +10,7 @@ trap 'rm -rf "$TEST_ROOT"' EXIT HUP INT TERM
 
 PASS_COUNT=0
 FAIL_COUNT=0
+HOST_PATH=$PATH
 
 pass() {
   PASS_COUNT=$((PASS_COUNT + 1))
@@ -26,7 +27,7 @@ assert_contains() {
   expected=$2
   description=$3
 
-  if grep -F "$expected" "$file" >/dev/null 2>&1; then
+  if grep -F -e "$expected" "$file" >/dev/null 2>&1; then
     pass "$description"
   else
     fail "$description (missing: $expected)"
@@ -38,7 +39,7 @@ assert_not_contains() {
   unexpected=$2
   description=$3
 
-  if grep -F "$unexpected" "$file" >/dev/null 2>&1; then
+  if grep -F -e "$unexpected" "$file" >/dev/null 2>&1; then
     fail "$description (found: $unexpected)"
   else
     pass "$description"
@@ -55,13 +56,56 @@ make_mock() {
   chmod +x "$path"
 }
 
+link_host_command() {
+  name=$1
+  command_path=$(PATH=$HOST_PATH command -v "$name") || {
+    printf 'installer contract setup: required command not found: %s\n' \
+      "$name" >&2
+    exit 1
+  }
+  ln -s "$command_path" "$BASE_BIN/$name"
+}
+
+BASE_BIN=$TEST_ROOT/base-bin
+mkdir "$BASE_BIN"
+for command_name in \
+  awk basename cat cp cut grep gzip head mkdir mktemp rm sed sh tar tr wc
+do
+  link_host_command "$command_name"
+done
+
 setup_case() {
   case_name=$1
   CASE_ROOT=$TEST_ROOT/$case_name
   MOCK_BIN=$CASE_ROOT/bin
+  GPG_BIN=$CASE_ROOT/gpg-bin
+  SQ_BIN=$CASE_ROOT/sq-bin
+  NO_VERIFIER_BIN=$CASE_ROOT/no-verifier-bin
   FIXTURES=$CASE_ROOT/fixtures
   LOG=$CASE_ROOT/commands.log
-  mkdir -p "$MOCK_BIN" "$FIXTURES" "$CASE_ROOT/dest" "$CASE_ROOT/archive"
+  MOCK_OS=Linux
+  MOCK_ARCH=x86_64
+  MOCK_LATEST_TAG=v1.2.3
+  MOCK_MISSING_CHECKSUM=0
+  MOCK_MANIFEST_SHA=
+  MOCK_ACTUAL_SHA=
+  MOCK_KEY_DOWNLOAD_FAIL=0
+  MOCK_SIGNATURE_DOWNLOAD_FAIL=0
+  MOCK_GPG_IMPORT_FAIL=0
+  MOCK_GPG_VERIFY_FAIL=0
+  MOCK_SQ_STYLE=modern
+  MOCK_SQ_VERIFY_FAIL=0
+  DOF_VERSION=
+  DEST=
+  mkdir -p \
+    "$MOCK_BIN" \
+    "$GPG_BIN" \
+    "$SQ_BIN" \
+    "$NO_VERIFIER_BIN" \
+    "$FIXTURES" \
+    "$CASE_ROOT/dest" \
+    "$CASE_ROOT/archive"
+  VERIFIER_PATH=$GPG_BIN
   : >"$LOG"
 
   printf '%s\n' '#!/bin/sh' 'exit 0' >"$CASE_ROOT/archive/dof"
@@ -107,6 +151,7 @@ case "$url" in
     fi
     ;;
   */checksums.txt.sig)
+    [ "${MOCK_SIGNATURE_DOWNLOAD_FAIL:-0}" != 1 ] || exit 22
     printf "signature\n" >"$output"
     ;;
   */keys/signing-key.asc)
@@ -118,12 +163,33 @@ case "$url" in
     ;;
 esac'
 
-  make_mock "$MOCK_BIN/gpg" '
+  make_mock "$GPG_BIN/gpg" '
 printf "gpg %s\n" "$*" >>"$MOCK_LOG"
 case " $* " in
   *" --import "*) [ "${MOCK_GPG_IMPORT_FAIL:-0}" != 1 ] || exit 1 ;;
   *" --verify "*) [ "${MOCK_GPG_VERIFY_FAIL:-0}" != 1 ] || exit 1 ;;
 esac'
+
+  make_mock "$SQ_BIN/sq" '
+printf "sq %s\n" "$*" >>"$MOCK_LOG"
+if [ "${1:-}" = verify ] && [ "${2:-}" = --help ]; then
+  case "${MOCK_SQ_STYLE:-modern}" in
+    modern)
+      printf "%s\n" "      --signer-file <PATH>" "      --signature-file <SIG>"
+      ;;
+    legacy)
+      printf "%s\n" "      --signer-cert <PATH>" "      --detached <SIG>"
+      ;;
+    incompatible)
+      printf "%s\n" "Verify signed messages"
+      ;;
+    *)
+      exit 2
+      ;;
+  esac
+  exit 0
+fi
+[ "${MOCK_SQ_VERIFY_FAIL:-0}" != 1 ]'
 
   make_mock "$MOCK_BIN/sha256sum" '
 printf "sha256sum %s\n" "$*" >>"$MOCK_LOG"
@@ -143,19 +209,47 @@ printf "sudo %s\n" "$*" >>"$MOCK_LOG"
 "$@"'
 }
 
+run_installer_environment() {
+  env \
+    PATH="$VERIFIER_PATH:$MOCK_BIN:$BASE_BIN" \
+    TMPDIR="$CASE_ROOT/tmp" \
+    MOCK_LOG="$LOG" \
+    MOCK_FIXTURES="$FIXTURES" \
+    MOCK_ARCHIVE_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    MOCK_OS="${MOCK_OS:-Linux}" \
+    MOCK_ARCH="${MOCK_ARCH:-x86_64}" \
+    MOCK_LATEST_TAG="${MOCK_LATEST_TAG:-v1.2.3}" \
+    MOCK_MISSING_CHECKSUM="${MOCK_MISSING_CHECKSUM:-0}" \
+    MOCK_MANIFEST_SHA="${MOCK_MANIFEST_SHA:-}" \
+    MOCK_ACTUAL_SHA="${MOCK_ACTUAL_SHA:-}" \
+    MOCK_KEY_DOWNLOAD_FAIL="${MOCK_KEY_DOWNLOAD_FAIL:-0}" \
+    MOCK_SIGNATURE_DOWNLOAD_FAIL="${MOCK_SIGNATURE_DOWNLOAD_FAIL:-0}" \
+    MOCK_GPG_IMPORT_FAIL="${MOCK_GPG_IMPORT_FAIL:-0}" \
+    MOCK_GPG_VERIFY_FAIL="${MOCK_GPG_VERIFY_FAIL:-0}" \
+    MOCK_SQ_STYLE="${MOCK_SQ_STYLE:-modern}" \
+    MOCK_SQ_VERIFY_FAIL="${MOCK_SQ_VERIFY_FAIL:-0}" \
+    DOF_VERSION="${DOF_VERSION:-}" \
+    DEST="${DEST:-}" \
+    "$@"
+}
+
 run_installer() {
   stdout=$1
   stderr=$2
   shift 2
 
-  env \
-    PATH="$MOCK_BIN:/usr/bin:/bin" \
-    TMPDIR="$CASE_ROOT/tmp" \
-    MOCK_LOG="$LOG" \
-    MOCK_FIXTURES="$FIXTURES" \
-    MOCK_ARCHIVE_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  run_installer_environment \
     "$@" \
-    sh "$INSTALLER" >"$stdout" 2>"$stderr"
+    /bin/sh "$INSTALLER" >"$stdout" 2>"$stderr"
+}
+
+run_installer_with_args() {
+  stdout=$1
+  stderr=$2
+  shift 2
+
+  run_installer_environment \
+    /bin/sh "$INSTALLER" "$@" >"$stdout" 2>"$stderr"
 }
 
 expect_success() {
@@ -175,6 +269,29 @@ expect_failure() {
   shift
   mkdir -p "$CASE_ROOT/tmp"
   if run_installer "$CASE_ROOT/stdout" "$CASE_ROOT/stderr" "$@"; then
+    fail "$description (unexpected success)"
+  else
+    pass "$description"
+  fi
+}
+
+expect_success_with_args() {
+  description=$1
+  shift
+  mkdir -p "$CASE_ROOT/tmp"
+  if run_installer_with_args "$CASE_ROOT/stdout" "$CASE_ROOT/stderr" "$@"; then
+    pass "$description"
+  else
+    fail "$description"
+    sed -n '1,80p' "$CASE_ROOT/stderr" >&2
+  fi
+}
+
+expect_failure_with_args() {
+  description=$1
+  shift
+  mkdir -p "$CASE_ROOT/tmp"
+  if run_installer_with_args "$CASE_ROOT/stdout" "$CASE_ROOT/stderr" "$@"; then
     fail "$description (unexpected success)"
   else
     pass "$description"
@@ -242,7 +359,7 @@ assert_not_contains "$LOG" "curl " \
   "unsupported platform is rejected before download"
 
 setup_case intel_mac_without_tools
-rm "$MOCK_BIN/gpg" "$MOCK_BIN/curl"
+rm "$GPG_BIN/gpg" "$MOCK_BIN/curl"
 if env PATH="$MOCK_BIN" MOCK_OS=Darwin MOCK_ARCH=x86_64 \
   MOCK_LOG="$LOG" /bin/sh "$INSTALLER" \
   >"$CASE_ROOT/stdout" 2>"$CASE_ROOT/stderr"; then
@@ -251,7 +368,7 @@ else
   pass "Intel macOS without installer dependencies is rejected"
 fi
 assert_contains "$CASE_ROOT/stderr" "Intel macOS is not supported" \
-  "Intel macOS is diagnosed before missing GPG or curl"
+  "Intel macOS is diagnosed before a missing signature verifier or curl"
 assert_not_contains "$CASE_ROOT/stderr" "required command not found" \
   "unsupported-platform rejection precedes dependency checks"
 assert_not_contains "$LOG" "curl " \
@@ -268,6 +385,127 @@ expect_failure "invalid explicit version is rejected" \
   MOCK_OS=Linux MOCK_ARCH=x86_64 DOF_VERSION=1.2.3 DEST="$CASE_ROOT/dest"
 assert_contains "$CASE_ROOT/stderr" "DOF_VERSION must be 'latest' or an exact vX.Y.Z tag" \
   "invalid-version diagnostic explains the contract"
+
+setup_case unknown_option
+VERIFIER_PATH=$NO_VERIFIER_BIN
+expect_failure_with_args "unknown installer options are rejected" \
+  --not-an-installer-option
+assert_contains "$CASE_ROOT/stderr" \
+  "unknown argument: --not-an-installer-option" \
+  "unknown-option diagnostic includes the rejected option"
+assert_not_contains "$LOG" "curl " \
+  "unknown options are rejected before network access"
+
+setup_case positional_argument
+VERIFIER_PATH=$NO_VERIFIER_BIN
+expect_failure_with_args "positional installer arguments are rejected" unexpected
+assert_contains "$CASE_ROOT/stderr" "unknown argument: unexpected" \
+  "positional-argument diagnostic includes the rejected argument"
+assert_not_contains "$LOG" "curl " \
+  "positional arguments are rejected before network access"
+
+setup_case gpg_preferred
+VERIFIER_PATH="$GPG_BIN:$SQ_BIN"
+expect_success "GPG is preferred when GPG and sq are both available" \
+  MOCK_OS=Linux MOCK_ARCH=x86_64 DOF_VERSION=v1.0.0 DEST="$CASE_ROOT/dest"
+assert_contains "$LOG" "gpg --batch --quiet" \
+  "the preferred GPG verifier is invoked"
+assert_not_contains "$LOG" "sq " \
+  "sq is not even probed when GPG is available"
+
+setup_case gpg_failure_no_failover
+VERIFIER_PATH="$GPG_BIN:$SQ_BIN"
+expect_failure "a selected GPG verifier failure does not fall through to sq" \
+  MOCK_OS=Linux MOCK_ARCH=x86_64 DOF_VERSION=v1.0.0 DEST="$CASE_ROOT/dest" \
+  MOCK_GPG_VERIFY_FAIL=1
+assert_contains "$CASE_ROOT/stderr" "checksum signature verification failed" \
+  "selected GPG failure remains authoritative"
+assert_not_contains "$LOG" "sq " \
+  "GPG verification failure never invokes sq"
+assert_not_contains "$LOG" "install -m 0755" \
+  "GPG verification failure without the ignore flag prevents installation"
+
+setup_case modern_sq
+VERIFIER_PATH=$SQ_BIN
+expect_success "modern sq verifies the checksum signature" \
+  MOCK_OS=Darwin MOCK_ARCH=arm64 DOF_VERSION=v1.0.0 DEST="$CASE_ROOT/dest" \
+  MOCK_SQ_STYLE=modern
+assert_contains "$LOG" "sq verify --help" \
+  "sq compatibility is probed before selection"
+assert_contains "$LOG" "sq verify --signer-file" \
+  "modern sq receives its signer-file option"
+assert_contains "$LOG" "--signature-file" \
+  "modern sq receives its detached-signature option"
+assert_not_contains "$LOG" "--signer-cert" \
+  "modern sq verification never tries legacy syntax"
+
+setup_case legacy_sq
+VERIFIER_PATH=$SQ_BIN
+expect_success "legacy sq verifies the checksum signature" \
+  MOCK_OS=Linux MOCK_ARCH=x86_64 DOF_VERSION=v1.0.0 DEST="$CASE_ROOT/dest" \
+  MOCK_SQ_STYLE=legacy
+assert_contains "$LOG" "sq verify --help" \
+  "legacy sq compatibility is probed before selection"
+assert_contains "$LOG" "sq verify --signer-cert" \
+  "legacy sq receives its signer-cert option"
+assert_contains "$LOG" "--detached" \
+  "legacy sq receives its detached-signature option"
+assert_not_contains "$LOG" "--signer-file" \
+  "legacy sq verification never tries modern syntax"
+
+setup_case strict_sq_failure
+VERIFIER_PATH=$SQ_BIN
+expect_failure "sq verification failure fails closed" \
+  MOCK_OS=Linux MOCK_ARCH=x86_64 DOF_VERSION=v1.0.0 DEST="$CASE_ROOT/dest" \
+  MOCK_SQ_STYLE=modern MOCK_SQ_VERIFY_FAIL=1
+assert_contains "$CASE_ROOT/stderr" "checksum signature verification failed" \
+  "strict sq verification failure is explicit"
+assert_contains "$LOG" "sq verify --signer-file" \
+  "strict sq failure uses the selected modern syntax"
+assert_not_contains "$LOG" "--signer-cert" \
+  "strict modern sq failure never retries legacy syntax"
+assert_not_contains "$LOG" "install -m 0755" \
+  "strict sq verification failure prevents installation"
+
+setup_case incompatible_sq
+VERIFIER_PATH=$SQ_BIN
+expect_failure "an incompatible sq CLI is not accepted as a verifier" \
+  MOCK_OS=Linux MOCK_ARCH=x86_64 DOF_VERSION=v1.0.0 DEST="$CASE_ROOT/dest" \
+  MOCK_SQ_STYLE=incompatible
+assert_contains "$CASE_ROOT/stderr" \
+  "required signature verifier not found (gpg or compatible sq)" \
+  "incompatible-sq diagnostic explains the verifier requirement"
+assert_contains "$LOG" "sq verify --help" \
+  "an available sq CLI is inspected for compatible verification options"
+assert_not_contains "$LOG" "curl " \
+  "an incompatible sq CLI is rejected before network access"
+
+setup_case no_signature_verifier
+VERIFIER_PATH=$NO_VERIFIER_BIN
+expect_failure "missing signature verifiers fail closed" \
+  MOCK_OS=Linux MOCK_ARCH=x86_64 DOF_VERSION=v1.0.0 DEST="$CASE_ROOT/dest"
+assert_contains "$CASE_ROOT/stderr" \
+  "required signature verifier not found (gpg or compatible sq)" \
+  "missing-verifier diagnostic lists the supported choices"
+assert_not_contains "$LOG" "curl " \
+  "missing signature verifiers fail before network access"
+
+setup_case ignored_missing_verifier
+VERIFIER_PATH=$NO_VERIFIER_BIN
+MOCK_OS=Linux MOCK_ARCH=x86_64 DOF_VERSION=v1.0.0 \
+  DEST="$CASE_ROOT/dest" \
+  expect_success_with_args \
+  "the ignore flag permits installation without a signature verifier" \
+  --ignore-signature-validation --ignore-signature-validation
+assert_contains "$CASE_ROOT/stderr" \
+  "required signature verifier not found (gpg or compatible sq); continuing because --ignore-signature-validation was provided" \
+  "ignored missing verifier emits an explicit warning"
+assert_not_contains "$LOG" "checksums.txt.sig" \
+  "missing-verifier ignore mode does not download an unusable signature"
+assert_not_contains "$LOG" "keys/signing-key.asc" \
+  "missing-verifier ignore mode does not download an unusable signing key"
+assert_contains "$LOG" "install -m 0755" \
+  "duplicate ignore flags are harmless and installation completes"
 
 setup_case missing_key
 expect_failure "missing release signing key fails closed" \
@@ -295,6 +533,119 @@ assert_contains "$CASE_ROOT/stderr" "checksum signature verification failed" \
   "signature failure diagnostic is explicit"
 assert_not_contains "$LOG" "install -m 0755" \
   "signature failure prevents installation"
+
+setup_case missing_signature
+expect_failure "missing checksum signature fails closed" \
+  MOCK_OS=Linux MOCK_ARCH=x86_64 DOF_VERSION=v1.0.0 DEST="$CASE_ROOT/dest" \
+  MOCK_SIGNATURE_DOWNLOAD_FAIL=1
+assert_contains "$CASE_ROOT/stderr" "could not download checksums.txt.sig" \
+  "missing-signature diagnostic is explicit"
+assert_not_contains "$LOG" "install -m 0755" \
+  "missing signature prevents installation"
+
+setup_case ignored_missing_signature
+MOCK_OS=Linux MOCK_ARCH=x86_64 DOF_VERSION=v1.0.0 \
+  DEST="$CASE_ROOT/dest" MOCK_SIGNATURE_DOWNLOAD_FAIL=1 \
+  expect_success_with_args \
+  "the ignore flag permits installation when the signature download fails" \
+  --ignore-signature-validation
+assert_contains "$CASE_ROOT/stderr" \
+  "could not download checksums.txt.sig; continuing because --ignore-signature-validation was provided" \
+  "ignored signature-download failure emits an explicit warning"
+assert_contains "$LOG" "install -m 0755" \
+  "ignored signature-download failure permits installation"
+
+setup_case ignored_missing_key
+MOCK_OS=Linux MOCK_ARCH=x86_64 DOF_VERSION=v1.0.0 \
+  DEST="$CASE_ROOT/dest" MOCK_KEY_DOWNLOAD_FAIL=1 \
+  expect_success_with_args \
+  "the ignore flag permits installation when the signing-key download fails" \
+  --ignore-signature-validation
+assert_contains "$CASE_ROOT/stderr" \
+  "could not download the release-tagged signing key; continuing because --ignore-signature-validation was provided" \
+  "ignored signing-key download failure emits an explicit warning"
+assert_contains "$LOG" "install -m 0755" \
+  "ignored signing-key download failure permits installation"
+
+setup_case ignored_gpg_failure
+VERIFIER_PATH="$GPG_BIN:$SQ_BIN"
+MOCK_OS=Linux MOCK_ARCH=x86_64 DOF_VERSION=v1.0.0 \
+  DEST="$CASE_ROOT/dest" MOCK_GPG_VERIFY_FAIL=1 \
+  expect_success_with_args \
+  "the ignore flag permits installation after GPG verification fails" \
+  --ignore-signature-validation
+assert_contains "$CASE_ROOT/stderr" \
+  "checksum signature verification failed; continuing because --ignore-signature-validation was provided" \
+  "ignored GPG verification failure emits an explicit warning"
+assert_not_contains "$LOG" "sq " \
+  "ignored GPG verification failure still does not fall through to sq"
+assert_contains "$LOG" "install -m 0755" \
+  "ignored GPG verification failure permits installation"
+
+setup_case ignored_sq_failure
+VERIFIER_PATH=$SQ_BIN
+MOCK_OS=Linux MOCK_ARCH=x86_64 DOF_VERSION=v1.0.0 \
+  DEST="$CASE_ROOT/dest" MOCK_SQ_STYLE=modern MOCK_SQ_VERIFY_FAIL=1 \
+  expect_success_with_args \
+  "the ignore flag permits installation after sq verification fails" \
+  --ignore-signature-validation
+assert_contains "$CASE_ROOT/stderr" \
+  "checksum signature verification failed; continuing because --ignore-signature-validation was provided" \
+  "ignored sq verification failure emits an explicit warning"
+assert_not_contains "$LOG" "--signer-cert" \
+  "failed modern sq verification never tries legacy syntax"
+assert_contains "$LOG" "install -m 0755" \
+  "ignored sq verification failure permits installation"
+
+setup_case successful_validation_with_ignore
+MOCK_OS=Linux MOCK_ARCH=x86_64 DOF_VERSION=v1.0.0 DEST="$CASE_ROOT/dest" \
+  expect_success_with_args \
+  "the ignore flag still validates signatures when verification succeeds" \
+  --ignore-signature-validation
+assert_contains "$LOG" "gpg --batch --quiet" \
+  "ignore mode invokes an available signature verifier"
+assert_not_contains "$CASE_ROOT/stderr" "dof installer: warning:" \
+  "successful validation in ignore mode emits no warning"
+
+setup_case ignored_validation_checksum_mismatch
+VERIFIER_PATH=$NO_VERIFIER_BIN
+MOCK_OS=Linux MOCK_ARCH=x86_64 DOF_VERSION=v1.0.0 \
+  DEST="$CASE_ROOT/dest" \
+  MOCK_ACTUAL_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+  expect_failure_with_args \
+  "the ignore flag never bypasses archive checksum validation" \
+  --ignore-signature-validation
+assert_contains "$CASE_ROOT/stderr" "checksum mismatch" \
+  "checksum mismatch remains explicit in signature-ignore mode"
+assert_not_contains "$LOG" "install -m 0755" \
+  "checksum mismatch in signature-ignore mode prevents installation"
+
+setup_case ignored_validation_missing_checksum
+VERIFIER_PATH=$NO_VERIFIER_BIN
+MOCK_OS=Linux MOCK_ARCH=x86_64 DOF_VERSION=v1.0.0 \
+  DEST="$CASE_ROOT/dest" MOCK_MISSING_CHECKSUM=1 \
+  expect_failure_with_args \
+  "the ignore flag never bypasses manifest entry validation" \
+  --ignore-signature-validation
+assert_contains "$CASE_ROOT/stderr" "does not contain exactly one entry" \
+  "missing manifest entry remains explicit in signature-ignore mode"
+assert_not_contains "$LOG" "install -m 0755" \
+  "missing manifest entry in signature-ignore mode prevents installation"
+
+setup_case ignored_validation_symlink_archive
+VERIFIER_PATH=$NO_VERIFIER_BIN
+rm "$CASE_ROOT/archive/dof"
+ln -s /bin/sh "$CASE_ROOT/archive/dof"
+tar -czf "$FIXTURES/archive.tar.gz" -C "$CASE_ROOT/archive" dof
+MOCK_OS=Linux MOCK_ARCH=x86_64 DOF_VERSION=v1.0.0 DEST="$CASE_ROOT/dest" \
+  expect_failure_with_args \
+  "the ignore flag never bypasses archive safety validation" \
+  --ignore-signature-validation
+assert_contains "$CASE_ROOT/stderr" \
+  "does not contain a regular executable dof binary" \
+  "unsafe symlink archive remains explicit in signature-ignore mode"
+assert_not_contains "$LOG" "install -m 0755" \
+  "unsafe symlink archive in signature-ignore mode prevents installation"
 
 setup_case missing_checksum
 expect_failure "missing checksum entry fails closed" \
