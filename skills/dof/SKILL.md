@@ -106,8 +106,9 @@ dof feature disable <feature>
 ```
 
 The feature must already be a real directory immediately beneath the
-workspace's `features/` directory. An omitted feature setting defaults to
-enabled; an explicit `false` is respected.
+workspace's `features/` directory. An omitted `default` setting is enabled;
+every other omitted feature is disabled. Explicit settings always take
+precedence.
 
 ## Apply safely
 

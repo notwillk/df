@@ -76,6 +76,199 @@ features:
 }
 
 #[test]
+fn apply_runs_only_default_and_explicitly_enabled_features() {
+    let fixture = Fixture::new();
+    fixture.write_config(
+        r#"repo:
+  url: file:///dotfiles
+  branch: main
+features:
+  explicitly-enabled: true
+  disabled: false
+"#,
+    );
+
+    for (feature, filename) in [
+        ("default", "default.txt"),
+        ("explicitly-enabled", "explicit.txt"),
+        ("macos-only", "macos.txt"),
+        ("disabled", "disabled.txt"),
+    ] {
+        fs::write(fixture.feature_home(feature).join(filename), feature).unwrap();
+        fixture.write_apply_script(
+            feature,
+            &format!("#!/bin/sh\nprintf '{feature}\\n' >> \"$HOME/script-runs\"\n"),
+        );
+    }
+    fs::create_dir(fixture.feature_home("macos-only").join("macos-directory")).unwrap();
+    fixture.write_snippets(
+        "macos-only",
+        "snippets:\n  macos-snippet:\n    - 'must not be appended'\n",
+    );
+
+    let result = output(dof(&fixture.home).arg("apply"));
+
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert_summary(&result, 2, 0);
+    assert!(fixture.home.join("default.txt").is_file());
+    assert!(fixture.home.join("explicit.txt").is_file());
+    assert!(!fixture.home.join("macos.txt").exists());
+    assert!(!fixture.home.join("disabled.txt").exists());
+    assert!(!fixture.home.join("macos-directory").exists());
+    assert!(!fixture.home.join("macos-snippet").exists());
+    assert_eq!(
+        fs::read_to_string(fixture.home.join("script-runs")).unwrap(),
+        "default\nexplicitly-enabled\n"
+    );
+}
+
+#[test]
+fn explicit_false_disables_default_across_every_resource_kind() {
+    let fixture = Fixture::new();
+    fixture.write_config(
+        r#"repo:
+  url: file:///dotfiles
+  branch: main
+features:
+  default: false
+  opt-in: true
+"#,
+    );
+
+    let default_home = fixture.feature_home("default");
+    fs::write(default_home.join("default.txt"), "must not be copied\n").unwrap();
+    fs::create_dir(default_home.join("default-directory")).unwrap();
+    fixture.write_snippets(
+        "default",
+        "snippets:\n  default-snippet:\n    - 'must not be appended'\n",
+    );
+    fixture.write_apply_script(
+        "default",
+        "#!/bin/sh\nprintf 'default\\n' >> \"$HOME/script-runs\"\n",
+    );
+
+    fs::write(
+        fixture.feature_home("opt-in").join("opt-in.txt"),
+        "enabled\n",
+    )
+    .unwrap();
+    fixture.write_apply_script(
+        "opt-in",
+        "#!/bin/sh\nprintf 'opt-in\\n' >> \"$HOME/script-runs\"\n",
+    );
+
+    let result = output(dof(&fixture.home).arg("apply"));
+
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert_summary(&result, 1, 0);
+    assert_eq!(
+        fs::read_to_string(fixture.home.join("opt-in.txt")).unwrap(),
+        "enabled\n"
+    );
+    assert!(!fixture.home.join("default.txt").exists());
+    assert!(!fixture.home.join("default-directory").exists());
+    assert!(!fixture.home.join("default-snippet").exists());
+    assert_eq!(
+        fs::read_to_string(fixture.home.join("script-runs")).unwrap(),
+        "opt-in\n"
+    );
+}
+
+#[test]
+fn omitted_features_do_not_contribute_to_shared_snippet_targets() {
+    let fixture = Fixture::new();
+    fixture.write_snippets(
+        "default",
+        "snippets:\n  .profile:\n    - 'default snippet'\n",
+    );
+    fixture.write_snippets(
+        "macos-gui",
+        "snippets:\n  .profile:\n    - 'macOS snippet'\n",
+    );
+
+    let result = output(dof(&fixture.home).arg("apply"));
+
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert_summary(&result, 1, 0);
+    assert_eq!(
+        fs::read_to_string(fixture.home.join(".profile")).unwrap(),
+        "default snippet\n"
+    );
+}
+
+#[test]
+fn feature_commands_drive_list_and_apply_selection_end_to_end() {
+    let fixture = Fixture::new();
+    fs::write(
+        fixture.feature_home("default").join("default.txt"),
+        "default\n",
+    )
+    .unwrap();
+    fixture.write_apply_script(
+        "default",
+        "#!/bin/sh\nprintf 'default\\n' >> \"$HOME/script-runs\"\n",
+    );
+    let source = fixture.feature_home("hostname").join("hostname.txt");
+    fs::write(&source, "first\n").unwrap();
+    fixture.write_apply_script(
+        "hostname",
+        "#!/bin/sh\nprintf 'hostname\\n' >> \"$HOME/script-runs\"\n",
+    );
+
+    let initial = output(dof(&fixture.home).args(["features", "--json"]));
+    assert!(initial.status.success(), "{}", stderr(&initial));
+    assert_eq!(stdout(&initial), "[\"default\"]\n");
+
+    let enable = output(dof(&fixture.home).args(["feature", "enable", "hostname"]));
+    assert!(enable.status.success(), "{}", stderr(&enable));
+    let both = output(dof(&fixture.home).args(["features", "--json"]));
+    assert!(both.status.success(), "{}", stderr(&both));
+    assert_eq!(stdout(&both), "[\"default\",\"hostname\"]\n");
+
+    let disable_default = output(dof(&fixture.home).args(["feature", "disable", "default"]));
+    assert!(
+        disable_default.status.success(),
+        "{}",
+        stderr(&disable_default)
+    );
+    let hostname_only = output(dof(&fixture.home).args(["features", "--json"]));
+    assert!(hostname_only.status.success(), "{}", stderr(&hostname_only));
+    assert_eq!(stdout(&hostname_only), "[\"hostname\"]\n");
+
+    let applied = output(dof(&fixture.home).arg("apply"));
+    assert!(applied.status.success(), "{}", stderr(&applied));
+    assert_summary(&applied, 1, 0);
+    assert!(!fixture.home.join("default.txt").exists());
+    assert_eq!(
+        fs::read_to_string(fixture.home.join("hostname.txt")).unwrap(),
+        "first\n"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.home.join("script-runs")).unwrap(),
+        "hostname\n"
+    );
+
+    fs::write(&source, "second\n").unwrap();
+    let disable = output(dof(&fixture.home).args(["feature", "disable", "hostname"]));
+    assert!(disable.status.success(), "{}", stderr(&disable));
+    let none = output(dof(&fixture.home).args(["features", "--json"]));
+    assert!(none.status.success(), "{}", stderr(&none));
+    assert_eq!(stdout(&none), "[]\n");
+
+    let disabled = output(dof(&fixture.home).arg("apply"));
+    assert!(disabled.status.success(), "{}", stderr(&disabled));
+    assert_summary(&disabled, 0, 0);
+    assert_eq!(
+        fs::read_to_string(fixture.home.join("hostname.txt")).unwrap(),
+        "first\n"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.home.join("script-runs")).unwrap(),
+        "hostname\n"
+    );
+}
+
+#[test]
 fn backs_up_changed_files_once_and_skips_identical_files() {
     let fixture = Fixture::new();
     let source = fixture.feature_home("default");
@@ -161,6 +354,7 @@ fn apply_validates_disabled_feature_collisions_before_mutating_home() {
   url: file:///dotfiles
   branch: main
 features:
+  a-enabled: true
   z-disabled: false
 "#,
     );
@@ -228,7 +422,9 @@ fn enabled_feature_scripts_run_every_time_in_lexical_order() {
   url: file:///dotfiles
   branch: main
 features:
+  alpha: true
   middle-disabled: false
+  zeta: true
 "#,
     );
 
@@ -297,6 +493,15 @@ fn feature_script_runs_with_a_relative_home() {
 #[test]
 fn failing_feature_script_stops_later_scripts_after_file_sync() {
     let fixture = Fixture::new();
+    fixture.write_config(
+        r#"repo:
+  url: file:///dotfiles
+  branch: main
+features:
+  alpha: true
+  zeta: true
+"#,
+    );
     let zeta = fixture.feature_home("zeta");
     fs::write(zeta.join("managed-before-scripts.txt"), "managed\n").unwrap();
     fixture.write_apply_script(
@@ -325,6 +530,15 @@ fn failing_feature_script_stops_later_scripts_after_file_sync() {
 #[test]
 fn later_scripts_are_revalidated_immediately_before_execution() {
     let fixture = Fixture::new();
+    fixture.write_config(
+        r#"repo:
+  url: file:///dotfiles
+  branch: main
+features:
+  alpha: true
+  zeta: true
+"#,
+    );
     fixture.write_apply_script(
         "alpha",
         "#!/bin/sh\nprintf 'alpha\n' >> \"$HOME/script-runs\"\nchmod 600 \"$PWD/../zeta/apply\"\n",
@@ -470,6 +684,7 @@ fn source_symlinks_and_special_files_fail_during_preflight() {
 #[test]
 fn destination_ancestor_symlinks_fail_during_preflight() {
     let fixture = Fixture::new();
+    fixture.write_config(&config_with_enabled_safe_and("z-feature"));
     prepare_preflight_sentinel(&fixture);
     let source = fixture.feature_home("z-feature");
     fs::create_dir_all(source.join(".config/app")).unwrap();
@@ -489,6 +704,7 @@ fn destination_ancestor_symlinks_fail_during_preflight() {
 #[test]
 fn destination_file_directory_shape_conflicts_fail_during_preflight() {
     let ancestor_file = Fixture::new();
+    ancestor_file.write_config(&config_with_enabled_safe_and("z-feature"));
     prepare_preflight_sentinel(&ancestor_file);
     let source = ancestor_file.feature_home("z-feature");
     fs::create_dir_all(source.join(".config/app")).unwrap();
@@ -505,6 +721,7 @@ fn destination_file_directory_shape_conflicts_fail_during_preflight() {
     assert_preflight_left_home_unchanged(&ancestor_file);
 
     let leaf_directory = Fixture::new();
+    leaf_directory.write_config(&config_with_enabled_safe_and("z-feature"));
     prepare_preflight_sentinel(&leaf_directory);
     let source = leaf_directory.feature_home("z-feature");
     fs::write(source.join("destination"), "managed\n").unwrap();
@@ -642,6 +859,7 @@ fn applies_enabled_snippets_and_ignores_disabled_features() {
   url: file:///dotfiles
   branch: main
 features:
+  explicit: true
   disabled: false
 "#,
     );
@@ -651,7 +869,7 @@ features:
     );
     fixture.write_snippets(
         "explicit",
-        "snippets:\n  .profile:\n    - 'enabled implicit'\n",
+        "snippets:\n  .profile:\n    - 'enabled explicit'\n",
     );
     fixture.write_snippets(
         "disabled",
@@ -663,13 +881,22 @@ features:
     assert!(result.status.success(), "{}", stderr(&result));
     let contents = fs::read_to_string(fixture.home.join(".profile")).unwrap();
     assert!(contents.contains("enabled default"));
-    assert!(contents.contains("enabled implicit"));
+    assert!(contents.contains("enabled explicit"));
     assert!(!contents.contains("must not be appended"));
 }
 
 #[test]
 fn multiple_features_can_append_snippets_to_one_target() {
     let fixture = Fixture::new();
+    fixture.write_config(
+        r#"repo:
+  url: file:///dotfiles
+  branch: main
+features:
+  alpha: true
+  zeta: true
+"#,
+    );
     fixture.write_snippets(
         "alpha",
         "snippets:\n  .config/tool.conf:\n    - 'alpha = true'\n    - 'shared = true'\n",
@@ -753,6 +980,7 @@ fn invalid_or_unsafe_snippets_fail_before_home_is_mutated() {
   url: file:///dotfiles
   branch: main
 features:
+  a-safe: true
   z-invalid: false
 "#,
     );
@@ -812,6 +1040,7 @@ fn copy_and_snippet_collision_fails_apply_before_mutation() {
   url: file:///dotfiles
   branch: main
 features:
+  copy-owner: true
   snippet-owner: false
 "#,
     );
@@ -847,8 +1076,15 @@ fn config_with_disabled_bad_feature() -> &'static str {
   url: file:///dotfiles
   branch: main
 features:
+  a-safe: true
   z-bad: false
 "#
+}
+
+fn config_with_enabled_safe_and(feature: &str) -> String {
+    format!(
+        "repo:\n  url: file:///dotfiles\n  branch: main\nfeatures:\n  a-safe: true\n  {feature}: true\n"
+    )
 }
 
 fn assert_preflight_left_home_unchanged(fixture: &Fixture) {
