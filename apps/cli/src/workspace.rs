@@ -3,11 +3,14 @@ use std::ffi::OsStr;
 use std::fmt;
 use std::fs::{self, File};
 use std::io::Read;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde_yaml_ng::Value;
+
+use crate::drop_ins::{self, DropInFragment};
 
 #[derive(Debug)]
 pub(crate) struct FeatureDirectory {
@@ -134,6 +137,9 @@ pub(crate) enum Target {
     Snippets {
         contributions: BTreeMap<String, Vec<String>>,
     },
+    DropIns {
+        fragments: Vec<DropInFragment>,
+    },
 }
 
 #[derive(Debug)]
@@ -154,6 +160,7 @@ enum ClaimKind {
     Directory,
     CopyFile { source: PathBuf },
     Snippet { strings: Vec<String> },
+    DropIn { fragment: DropInFragment },
 }
 
 /// Discovers real directories beneath `<workspace>/features` in name order.
@@ -270,6 +277,17 @@ fn compile_workspace(feature_directories: Vec<FeatureDirectory>) -> Result<Valid
         }
         scan_feature_home(&feature, &mut claims)?;
         read_feature_snippets(&feature, &mut claims)?;
+        claims.extend(
+            drop_ins::discover(&feature)?
+                .into_iter()
+                .map(|declaration| Claim {
+                    path: declaration.target,
+                    feature: feature.name.clone(),
+                    kind: ClaimKind::DropIn {
+                        fragment: declaration.fragment,
+                    },
+                }),
+        );
     }
 
     Ok(ValidatedWorkspace {
@@ -556,7 +574,10 @@ fn compile_claims(mut claims: Vec<Claim>) -> Result<TargetIndex> {
             .cmp(&right.path)
             .then_with(|| claim_rank(&left.kind).cmp(&claim_rank(&right.kind)))
             .then_with(|| left.feature.cmp(&right.feature))
+            .then_with(|| claim_source(&left.kind).cmp(&claim_source(&right.kind)))
     });
+
+    validate_ascii_case_collisions(&claims)?;
 
     let mut grouped: BTreeMap<HomePath, Vec<Claim>> = BTreeMap::new();
     for claim in claims {
@@ -576,6 +597,85 @@ fn claim_rank(kind: &ClaimKind) -> u8 {
         ClaimKind::Directory => 0,
         ClaimKind::CopyFile { .. } => 1,
         ClaimKind::Snippet { .. } => 2,
+        ClaimKind::DropIn { .. } => 3,
+    }
+}
+
+fn claim_source(kind: &ClaimKind) -> Option<&Path> {
+    match kind {
+        ClaimKind::CopyFile { source } => Some(source),
+        ClaimKind::DropIn { fragment } => Some(&fragment.source),
+        ClaimKind::Directory | ClaimKind::Snippet { .. } => None,
+    }
+}
+
+fn validate_ascii_case_collisions(claims: &[Claim]) -> Result<()> {
+    let mut paths: BTreeMap<Vec<u8>, Vec<(HomePath, &Claim)>> = BTreeMap::new();
+    for claim in claims {
+        for path in claim
+            .path
+            .parents()
+            .chain(std::iter::once(claim.path.clone()))
+        {
+            let folded = path
+                .as_path()
+                .as_os_str()
+                .as_bytes()
+                .iter()
+                .map(u8::to_ascii_lowercase)
+                .collect::<Vec<_>>();
+            paths.entry(folded).or_default().push((path, claim));
+        }
+    }
+
+    for records in paths.values_mut() {
+        records.sort_by(|(left_path, left_claim), (right_path, right_claim)| {
+            left_path
+                .cmp(right_path)
+                .then_with(|| left_claim.feature.cmp(&right_claim.feature))
+                .then_with(|| claim_source(&left_claim.kind).cmp(&claim_source(&right_claim.kind)))
+        });
+        for (index, (left_path, left_claim)) in records.iter().enumerate() {
+            for (right_path, right_claim) in &records[index + 1..] {
+                if left_path == right_path
+                    || (!claim_is_drop_in(left_claim) && !claim_is_drop_in(right_claim))
+                {
+                    continue;
+                }
+                bail!(
+                    "drop-in portability collision: path '{}' ({}) differs only by ASCII case from path '{}' ({})",
+                    left_path,
+                    describe_claim(left_claim),
+                    right_path,
+                    describe_claim(right_claim)
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn claim_is_drop_in(claim: &Claim) -> bool {
+    matches!(claim.kind, ClaimKind::DropIn { .. })
+}
+
+fn describe_claim(claim: &Claim) -> String {
+    match &claim.kind {
+        ClaimKind::Directory => format!("directory from feature '{}'", claim.feature),
+        ClaimKind::CopyFile { source } => format!(
+            "copied by feature '{}' from {}",
+            claim.feature,
+            source.display()
+        ),
+        ClaimKind::Snippet { .. } => {
+            format!("snippet target from feature '{}'", claim.feature)
+        }
+        ClaimKind::DropIn { fragment } => format!(
+            "drop-in fragment '{}' from feature '{}' at {}",
+            fragment.filename,
+            fragment.feature,
+            fragment.source.display()
+        ),
     }
 }
 
@@ -583,16 +683,25 @@ fn aggregate_exact_claims(path: &HomePath, claims: Vec<Claim>) -> Result<Target>
     let mut directories = Vec::new();
     let mut copies = Vec::new();
     let mut snippets = Vec::new();
+    let mut drop_ins = Vec::new();
     for claim in claims {
         match claim.kind {
             ClaimKind::Directory => directories.push(claim.feature),
             ClaimKind::CopyFile { source } => copies.push((claim.feature, source)),
             ClaimKind::Snippet { strings } => snippets.push((claim.feature, strings)),
+            ClaimKind::DropIn { fragment } => drop_ins.push(fragment),
         }
     }
     directories.sort();
     copies.sort_by(|left, right| left.0.cmp(&right.0));
     snippets.sort_by(|left, right| left.0.cmp(&right.0));
+    drop_ins.sort_by(|left, right| {
+        left.order
+            .cmp(&right.order)
+            .then_with(|| left.filename.cmp(&right.filename))
+            .then_with(|| left.feature.cmp(&right.feature))
+            .then_with(|| left.source.cmp(&right.source))
+    });
 
     if let (Some((file_owner, _)), Some(directory_owner)) = (copies.first(), directories.first()) {
         bail!(
@@ -620,6 +729,32 @@ fn aggregate_exact_claims(path: &HomePath, claims: Vec<Claim>) -> Result<Target>
             snippet_owner
         );
     }
+    if let (Some(_), Some(directory_owner)) = (drop_ins.first(), directories.first()) {
+        bail!(
+            "drop-in target '{}' ({}) is also a directory in feature '{}'",
+            path,
+            describe_drop_in_fragments(&drop_ins),
+            directory_owner
+        );
+    }
+    if let (Some(_), Some((file_owner, source))) = (drop_ins.first(), copies.first()) {
+        bail!(
+            "drop-in target '{}' ({}) is also copied by feature '{}' from {}",
+            path,
+            describe_drop_in_fragments(&drop_ins),
+            file_owner,
+            source.display()
+        );
+    }
+    if let (Some(_), Some((snippet_owner, _))) = (drop_ins.first(), snippets.first()) {
+        bail!(
+            "drop-in target '{}' ({}) is also managed by snippets in feature '{}'",
+            path,
+            describe_drop_in_fragments(&drop_ins),
+            snippet_owner
+        );
+    }
+
     if copies.len() > 1 {
         bail!(
             "destination '{}' is a file in both feature '{}' and feature '{}'",
@@ -628,6 +763,7 @@ fn aggregate_exact_claims(path: &HomePath, claims: Vec<Claim>) -> Result<Target>
             copies[1].0
         );
     }
+    validate_drop_in_reservations(path, &drop_ins)?;
 
     if let Some((feature, source)) = copies.into_iter().next() {
         return Ok(Target::CopyFile { feature, source });
@@ -637,9 +773,64 @@ fn aggregate_exact_claims(path: &HomePath, claims: Vec<Claim>) -> Result<Target>
             contributions: snippets.into_iter().collect(),
         });
     }
+    if !drop_ins.is_empty() {
+        return Ok(Target::DropIns {
+            fragments: drop_ins,
+        });
+    }
     Ok(Target::Directory {
         features: directories.into_iter().collect(),
     })
+}
+
+fn validate_drop_in_reservations(path: &HomePath, fragments: &[DropInFragment]) -> Result<()> {
+    let mut filenames = BTreeMap::new();
+    for fragment in fragments {
+        if let Some(previous) = filenames.insert(fragment.filename.as_str(), fragment) {
+            bail!(
+                "drop-in target '{}' fragment filename '{}' is declared by feature '{}' at {} and feature '{}' at {}",
+                path,
+                fragment.filename,
+                previous.feature,
+                previous.source.display(),
+                fragment.feature,
+                fragment.source.display()
+            );
+        }
+    }
+
+    let mut orders = BTreeMap::new();
+    for fragment in fragments {
+        if let Some(previous) = orders.insert(fragment.order, fragment) {
+            bail!(
+                "drop-in target '{}' order {:02} is declared by fragment '{}' in feature '{}' at {} and fragment '{}' in feature '{}' at {}",
+                path,
+                fragment.order,
+                previous.filename,
+                previous.feature,
+                previous.source.display(),
+                fragment.filename,
+                fragment.feature,
+                fragment.source.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn describe_drop_in_fragments(fragments: &[DropInFragment]) -> String {
+    fragments
+        .iter()
+        .map(|fragment| {
+            format!(
+                "fragment '{}' from feature '{}' at {}",
+                fragment.filename,
+                fragment.feature,
+                fragment.source.display()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn validate_target_structure(targets: &BTreeMap<HomePath, Target>) -> Result<()> {
@@ -661,7 +852,10 @@ fn validate_target_structure(targets: &BTreeMap<HomePath, Target>) -> Result<()>
 }
 
 fn target_is_file(target: &Target) -> bool {
-    matches!(target, Target::CopyFile { .. } | Target::Snippets { .. })
+    matches!(
+        target,
+        Target::CopyFile { .. } | Target::Snippets { .. } | Target::DropIns { .. }
+    )
 }
 
 fn bail_structural_conflict(
@@ -670,6 +864,17 @@ fn bail_structural_conflict(
     ancestor: &HomePath,
     ancestor_target: &Target,
 ) -> Result<()> {
+    if matches!(target, Target::DropIns { .. }) || matches!(ancestor_target, Target::DropIns { .. })
+    {
+        bail!(
+            "destination '{}' ({}) conflicts structurally with ancestor '{}' ({})",
+            path,
+            describe_target(target),
+            ancestor,
+            describe_target(ancestor_target)
+        );
+    }
+
     let owner = target_owner(target);
     let ancestor_owner = target_owner(ancestor_target);
     match (target, ancestor_target) {
@@ -701,8 +906,41 @@ fn bail_structural_conflict(
             ancestor,
             ancestor_owner
         ),
+        (_, Target::DropIns { .. }) => bail!(
+            "destination '{}' in feature '{}' is nested beneath drop-in target '{}' from feature '{}'",
+            path,
+            owner,
+            ancestor,
+            ancestor_owner
+        ),
         (_, Target::Directory { .. }) => unreachable!("directories are not structural blockers"),
     }
+}
+
+fn describe_target(target: &Target) -> String {
+    match target {
+        Target::Directory { features } => {
+            format!(
+                "directory from feature(s) {}",
+                join_features(features.iter())
+            )
+        }
+        Target::CopyFile { feature, source } => {
+            format!("copied by feature '{feature}' from {}", source.display())
+        }
+        Target::Snippets { contributions } => format!(
+            "snippet target from feature(s) {}",
+            join_features(contributions.keys())
+        ),
+        Target::DropIns { fragments } => describe_drop_in_fragments(fragments),
+    }
+}
+
+fn join_features<'a>(features: impl Iterator<Item = &'a String>) -> String {
+    features
+        .map(|feature| format!("'{feature}'"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn target_owner(target: &Target) -> &str {
@@ -716,6 +954,12 @@ fn target_owner(target: &Target) -> &str {
             .keys()
             .next()
             .expect("compiled snippet target has an owner"),
+        Target::DropIns { fragments } => {
+            &fragments
+                .first()
+                .expect("compiled drop-in target has an owner")
+                .feature
+        }
     }
 }
 
@@ -787,9 +1031,13 @@ mod tests {
             (TestKind::Directory, TestKind::Directory, true),
             (TestKind::Directory, TestKind::Copy, false),
             (TestKind::Directory, TestKind::Snippet, false),
+            (TestKind::Directory, TestKind::DropIn, false),
             (TestKind::Copy, TestKind::Copy, false),
             (TestKind::Copy, TestKind::Snippet, false),
+            (TestKind::Copy, TestKind::DropIn, false),
             (TestKind::Snippet, TestKind::Snippet, true),
+            (TestKind::Snippet, TestKind::DropIn, false),
+            (TestKind::DropIn, TestKind::DropIn, true),
         ];
 
         for (left, right, valid) in cases {
@@ -818,8 +1066,13 @@ mod tests {
         let cases = [
             (TestKind::Copy, TestKind::Copy),
             (TestKind::Copy, TestKind::Snippet),
+            (TestKind::Copy, TestKind::DropIn),
             (TestKind::Snippet, TestKind::Copy),
             (TestKind::Snippet, TestKind::Snippet),
+            (TestKind::Snippet, TestKind::DropIn),
+            (TestKind::DropIn, TestKind::Copy),
+            (TestKind::DropIn, TestKind::Snippet),
+            (TestKind::DropIn, TestKind::DropIn),
         ];
 
         for (ancestor, descendant) in cases {
@@ -840,6 +1093,8 @@ mod tests {
             test_claim("beta", TestKind::Directory, ".config"),
             test_claim("alpha", TestKind::Directory, ".config"),
             test_claim("gamma", TestKind::Snippet, ".profile"),
+            test_claim("alpha", TestKind::DropIn, ".Brewfile"),
+            test_claim("zeta", TestKind::DropIn, ".Brewfile"),
         ];
         let expected = target_signature(compile_claims(claims.clone()).unwrap());
         for permutation in permutations(claims) {
@@ -848,6 +1103,45 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn drop_in_case_collisions_cover_implied_parents_only_when_involved() {
+        let claims = vec![
+            test_claim("drop", TestKind::DropIn, ".Config/tool.conf"),
+            test_claim("snippet", TestKind::Snippet, ".config/other.conf"),
+        ];
+        let forward = compile_claims(claims.clone()).unwrap_err();
+        let reverse = compile_claims(claims.into_iter().rev().collect()).unwrap_err();
+        assert_eq!(format!("{forward:#}"), format!("{reverse:#}"));
+        assert!(format!("{forward:#}").contains("ASCII case"));
+
+        compile_claims(vec![
+            test_claim("copy", TestKind::Copy, ".Config/tool.conf"),
+            test_claim("snippet", TestKind::Snippet, ".config/other.conf"),
+        ])
+        .expect("case-only aliases remain unchanged when no drop-in participates");
+    }
+
+    #[test]
+    fn drop_in_reservations_reject_duplicate_orders_and_filenames() {
+        let same_order = vec![
+            test_drop_in_claim("alpha", ".Brewfile", 10, "10-alpha"),
+            test_drop_in_claim("zeta", ".Brewfile", 10, "10-zeta"),
+        ];
+        assert!(format!("{:#}", compile_claims(same_order).unwrap_err()).contains("order 10"));
+
+        let same_filename = vec![
+            test_drop_in_claim("alpha", ".Brewfile", 10, "10-shared"),
+            test_drop_in_claim("zeta", ".Brewfile", 10, "10-shared"),
+        ];
+        assert!(format!("{:#}", compile_claims(same_filename).unwrap_err()).contains("filename"));
+
+        compile_claims(vec![
+            test_drop_in_claim("alpha", ".Brewfile", 10, "10-shared"),
+            test_drop_in_claim("zeta", ".profile", 10, "10-shared"),
+        ])
+        .expect("orders and filenames are reserved independently for each target");
     }
 
     #[test]
@@ -871,6 +1165,7 @@ mod tests {
                         "file"
                     }
                     Target::Snippets { .. } => "snippets",
+                    Target::DropIns { .. } => "drop-ins",
                 };
                 (path.as_path().to_owned(), kind)
             })
@@ -891,6 +1186,7 @@ mod tests {
         Directory,
         Copy,
         Snippet,
+        DropIn,
     }
 
     fn test_claim(feature: &str, kind: TestKind, path: &str) -> Claim {
@@ -902,11 +1198,31 @@ mod tests {
             TestKind::Snippet => ClaimKind::Snippet {
                 strings: vec![feature.to_owned()],
             },
+            TestKind::DropIn => {
+                let order = if feature == "alpha" { 10 } else { 20 };
+                return test_drop_in_claim(feature, path, order, &format!("{order:02}-{feature}"));
+            }
         };
         Claim {
             path: HomePath::new(path).unwrap(),
             feature: feature.to_owned(),
             kind,
+        }
+    }
+
+    fn test_drop_in_claim(feature: &str, path: &str, order: u8, filename: &str) -> Claim {
+        Claim {
+            path: HomePath::new(path).unwrap(),
+            feature: feature.to_owned(),
+            kind: ClaimKind::DropIn {
+                fragment: DropInFragment {
+                    feature: feature.to_owned(),
+                    order,
+                    contents: format!("{feature}\n").into_bytes(),
+                    filename: filename.to_owned(),
+                    source: PathBuf::from(format!("/source/{feature}/{filename}")),
+                },
+            },
         }
     }
 
@@ -924,6 +1240,18 @@ mod tests {
                     Target::Snippets { contributions } => {
                         format!("snippets:{contributions:?}")
                     }
+                    Target::DropIns { fragments } => format!(
+                        "drop-ins:{:?}",
+                        fragments
+                            .into_iter()
+                            .map(|fragment| (
+                                fragment.feature,
+                                fragment.order,
+                                fragment.filename,
+                                fragment.contents,
+                            ))
+                            .collect::<Vec<_>>()
+                    ),
                 };
                 (path.as_path().to_owned(), value)
             })

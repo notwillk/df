@@ -9,6 +9,7 @@ mod apply;
 mod backup;
 mod clone;
 mod config;
+mod drop_ins;
 mod features;
 mod home_fs;
 mod lint;
@@ -34,7 +35,7 @@ enum Commands {
     /// List enabled workspace features
     Features(FeaturesArgs),
 
-    /// Copy enabled feature files into the home directory
+    /// Apply enabled feature resources to the home directory
     Apply,
 
     /// Enable or disable workspace features
