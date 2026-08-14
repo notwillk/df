@@ -5,8 +5,9 @@
 ## Install
 
 Release binaries are available for Linux x86-64, Linux ARM64, and Apple
-Silicon macOS. The installer requires `curl`, `tar`, `gpg`, and a platform
-SHA-256 utility:
+Silicon macOS. The installer requires `curl`, `tar`, and a platform SHA-256
+utility. By default, it also requires either GnuPG (`gpg`) or a compatible
+Sequoia `sq` for signature verification:
 
 ```sh
 curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
@@ -22,12 +23,39 @@ curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
   DOF_VERSION=v0.1.0 DEST="$HOME/.local/bin" sh
 ```
 
-The installer downloads the archive, `checksums.txt`, its detached GPG
+The installer downloads the archive, `checksums.txt`, its detached OpenPGP
 signature, and the public key committed at the selected release tag. It
-imports that key into a temporary keyring, verifies the manifest signature,
-and verifies the selected archive's exact SHA-256 entry before installing.
-It fails closed if any of those assets are absent or invalid. `sudo` is used
-only when the destination directory cannot be written directly.
+prefers `gpg` and otherwise uses a compatible Sequoia `sq` to verify the
+manifest signature, then verifies the selected archive's exact SHA-256 entry
+before installing. On macOS, either verifier can be installed with Homebrew:
+
+```sh
+brew install gnupg
+# or
+brew install sequoia-sq
+```
+
+By default, the installer fails closed if no compatible verifier is available,
+the signing assets cannot be downloaded, or signature verification fails. To
+continue after such a failure, pass `--ignore-signature-validation` to the
+shell running the installer:
+
+```sh
+curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+  https://raw.githubusercontent.com/notwillk/dof/main/scripts/install.sh | \
+  sh -s -- --ignore-signature-validation
+```
+
+The flag does not skip an available verifier: verification is still attempted,
+and the installer warns only if it must ignore a failure. SHA-256 and archive
+safety checks always remain mandatory. **When signature validation is ignored,
+the checksum manifest is unauthenticated and therefore cannot protect against
+an attacker who can replace both the archive and its checksum.**
+
+An outer installer, including `notwillk/dotfiles`'s `install.sh`, must
+explicitly forward `--ignore-signature-validation` to the `dof` installer;
+passing it only to a wrapper has no effect unless that wrapper forwards it.
+`sudo` is used only when the destination directory cannot be written directly.
 
 Intel macOS, Windows, and other platforms are not supported. Release signing
 is not operational until the repository maintainer completes the setup in

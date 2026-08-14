@@ -10,8 +10,65 @@ fail() {
   exit 1
 }
 
+warn() {
+  printf 'dof installer: warning: %s\n' "$*" >&2
+}
+
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
+}
+
+parse_arguments() {
+  ignore_signature_validation=0
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --ignore-signature-validation)
+        ignore_signature_validation=1
+        ;;
+      *)
+        fail "unknown argument: $1"
+        ;;
+    esac
+    shift
+  done
+}
+
+signature_validation_failure() {
+  if [ "$ignore_signature_validation" -eq 1 ]; then
+    warn "$*; continuing because --ignore-signature-validation was provided"
+    return
+  fi
+
+  fail "$*"
+}
+
+sq_help_has() {
+  printf '%s\n' "$sq_verify_help" | grep -F -e "$1" >/dev/null 2>&1
+}
+
+select_signature_verifier() {
+  signature_verifier=
+
+  if command -v gpg >/dev/null 2>&1; then
+    signature_verifier=gpg
+    return 0
+  fi
+
+  command -v sq >/dev/null 2>&1 || return 1
+  sq_verify_help=$(sq verify --help 2>&1) || return 1
+
+  if sq_help_has '--signer-file' && sq_help_has '--signature-file'; then
+    signature_verifier=sq-modern
+    return 0
+  fi
+
+  if sq_help_has '--signer-cert' && sq_help_has '--detached'; then
+    signature_verifier=sq-legacy
+    return 0
+  fi
+
+  return 1
 }
 
 download() {
@@ -20,6 +77,66 @@ download() {
 
   curl --fail --location --proto '=https' --tlsv1.2 --silent --show-error \
     --output "$destination" "$url"
+}
+
+validate_checksum_signature() {
+  validation_release_url=$1
+  validation_source_url=$2
+  validation_signature_path=$3
+  validation_public_key_path=$4
+  validation_checksums_path=$5
+
+  if ! download "$validation_signature_path" \
+    "$validation_release_url/checksums.txt.sig"; then
+    signature_validation_failure "could not download checksums.txt.sig"
+    return
+  fi
+
+  if ! download "$validation_public_key_path" \
+    "$validation_source_url/keys/signing-key.asc"; then
+    signature_validation_failure \
+      "could not download the release-tagged signing key"
+    return
+  fi
+
+  case "$signature_verifier" in
+    gpg)
+      gpg_home=$temporary_directory/gnupg
+      if ! mkdir -m 0700 "$gpg_home"; then
+        signature_validation_failure \
+          "could not create a temporary GPG home"
+        return
+      fi
+      if ! gpg --batch --quiet --homedir "$gpg_home" \
+        --import "$validation_public_key_path"; then
+        signature_validation_failure "could not import the release signing key"
+        return
+      fi
+      if ! gpg --batch --quiet --homedir "$gpg_home" \
+        --verify "$validation_signature_path" "$validation_checksums_path"; then
+        signature_validation_failure "checksum signature verification failed"
+        return
+      fi
+      ;;
+    sq-modern)
+      if ! sq verify \
+        --signer-file "$validation_public_key_path" \
+        --signature-file "$validation_signature_path" \
+        "$validation_checksums_path"; then
+        signature_validation_failure "checksum signature verification failed"
+        return
+      fi
+      ;;
+    sq-legacy)
+      if ! sq verify \
+        --signer-cert "$validation_public_key_path" \
+        --detached "$validation_signature_path" \
+        "$validation_checksums_path"; then
+        signature_validation_failure "checksum signature verification failed"
+        return
+      fi
+      ;;
+  esac
 }
 
 is_release_tag() {
@@ -130,18 +247,24 @@ install_binary() {
 }
 
 main() {
+  parse_arguments "$@"
+
   detected_os=$(uname -s)
   detected_architecture=$(uname -m)
   archive_name=$(select_archive "$detected_os" "$detected_architecture")
 
   require_command curl
-  require_command gpg
   require_command grep
   require_command awk
   require_command sed
   require_command tar
   require_command install
   require_command mktemp
+
+  if ! select_signature_verifier; then
+    signature_validation_failure \
+      "required signature verifier not found (gpg or compatible sq)"
+  fi
 
   umask 077
   temporary_directory=$(mktemp -d "${TMPDIR:-/tmp}/dof-install.XXXXXX") || \
@@ -162,18 +285,15 @@ main() {
     fail "could not download $archive_name"
   download "$checksums_path" "$release_url/checksums.txt" || \
     fail "could not download checksums.txt"
-  download "$signature_path" "$release_url/checksums.txt.sig" || \
-    fail "could not download checksums.txt.sig"
-  download "$public_key_path" "$source_url/keys/signing-key.asc" || \
-    fail "could not download the release-tagged signing key"
 
-  gpg_home=$temporary_directory/gnupg
-  mkdir -m 0700 "$gpg_home"
-  gpg --batch --quiet --homedir "$gpg_home" --import "$public_key_path" || \
-    fail "could not import the release signing key"
-  gpg --batch --quiet --homedir "$gpg_home" \
-    --verify "$signature_path" "$checksums_path" || \
-    fail "checksum signature verification failed"
+  if [ -n "$signature_verifier" ]; then
+    validate_checksum_signature \
+      "$release_url" \
+      "$source_url" \
+      "$signature_path" \
+      "$public_key_path" \
+      "$checksums_path"
+  fi
 
   expected_checksum=$(manifest_checksum "$checksums_path" "$archive_name") || \
     fail "checksums.txt does not contain exactly one entry for $archive_name"
