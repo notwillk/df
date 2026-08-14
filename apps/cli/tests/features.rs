@@ -159,6 +159,51 @@ features:
 }
 
 #[test]
+fn malformed_feature_maps_fail_closed_before_apply_mutates_home() {
+    let malformed_maps = [
+        ("sequence", "features: [default]\n"),
+        ("string", "features: default\n"),
+        ("boolean", "features: true\n"),
+        ("null map", "features: null\n"),
+        ("numeric value", "features:\n  default: 1\n"),
+        ("nested value", "features:\n  default:\n    nested: true\n"),
+    ];
+
+    for (case, features) in malformed_maps {
+        let fixture = Fixture::new();
+        fixture.write_config(&format!(
+            "repo:\n  url: file:///dotfiles\n  branch: main\n{features}"
+        ));
+        fs::write(
+            fixture.feature_home("default").join("sentinel"),
+            "mutated\n",
+        )
+        .unwrap();
+        fs::write(fixture.home.join("sentinel"), "preserved\n").unwrap();
+
+        let listed = output(dof(&fixture.home).args(["features", "--json"]));
+        assert!(
+            !listed.status.success(),
+            "{case} unexpectedly listed features"
+        );
+        assert!(
+            stderr(&listed).contains("failed to parse dof config"),
+            "{case}: {}",
+            stderr(&listed)
+        );
+
+        let applied = output(dof(&fixture.home).arg("apply"));
+        assert!(!applied.status.success(), "{case} unexpectedly applied");
+        assert_eq!(
+            fs::read_to_string(fixture.home.join("sentinel")).unwrap(),
+            "preserved\n",
+            "{case} failed open"
+        );
+        assert!(fs::symlink_metadata(fixture.home.join(".dof/backups")).is_err());
+    }
+}
+
+#[test]
 fn symlinked_state_directory_is_rejected_without_following_it() {
     let fixture = tempfile::tempdir().unwrap();
     let home = fixture.path().join("home");
